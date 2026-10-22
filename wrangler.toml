@@ -1,4 +1,4 @@
-name = "fox-coinl"
+name = "fox-coinll"
 main = "src/worker.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
@@ -8,19 +8,8 @@ directory = "./dist"
 binding = "ASSETS"
 
 [vars]
-APP_URL = "https://fox-coinl.pages.dev"
+APP_URL = "https://fox-coinll.pages.dev"
 TELEGRAM_BOT_USERNAME = "FOXCOINBot"
 TELEGRAM_BOT_NAME = "FOXCOIN"
 ADMIN_EMAIL = "k39127031@gmail.com"
 ADMIN_SECRET = "123456"
-
-# Optional Cloudflare Bindings
-# (Only uncomment if you manually created D1 / KV in Cloudflare Dashboard):
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "foxcoin-db"
-# database_id = "YOUR_REAL_D1_ID"
-
-# [[kv_namespaces]]
-# binding = "FOX_KV"
-# id = "YOUR_REAL_KV_ID"
