@@ -7,6 +7,7 @@ import {
   PlayerLevel,
   UpgradeDefinition,
   TradeOrder,
+  LuckyWheelPrize,
 } from '../src/types/game.js';
 import {
   PLAYER_LEVELS,
@@ -14,6 +15,10 @@ import {
   DAILY_REWARDS,
   TASKS,
   GAME_CONSTANTS,
+  LUCKY_WHEEL_PRIZES,
+  pickLuckyWheelPrize,
+  reconcileUserLevel,
+  getUpgradeXpBonus,
 } from './gameConfig.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -83,6 +88,9 @@ interface DatabaseSchema {
   botConfig: TelegramBotConfig;
   processedUpdateIds: Record<string, number>; // updateId -> timestamp (for persistent deduplication)
   trades: TradeOrder[];
+  customUpgrades?: UpgradeDefinition[];
+  deletedUpgradeIds?: string[];
+  wheelPrizes?: LuckyWheelPrize[];
 }
 
 // In-memory cache + persistent JSON
@@ -97,6 +105,9 @@ class DatabaseStore {
     botConfig: {},
     processedUpdateIds: {},
     trades: [],
+    customUpgrades: [],
+    deletedUpgradeIds: [],
+    wheelPrizes: [],
   };
   private saveTimeout: NodeJS.Timeout | null = null;
 
@@ -230,38 +241,55 @@ class DatabaseStore {
     };
   }
 
-  // Reconcile energy regeneration and unclaimed passive income
+  // Reconcile energy regeneration and passive income on time
   public refreshUserState(user: UserGameState, now: number = Date.now()): UserGameState {
     // 1. Calculate energy regeneration
-    const elapsedSeconds = Math.max(0, Math.floor((now - (user.boosters.turboActiveUntil > now ? now : user.createdAt)) / 1000));
     const lastEnergyTime = (user as any).lastEnergyTimestamp || user.createdAt;
-    const energyElapsedSec = Math.max(0, Math.floor((now - lastEnergyTime) / 1000));
+    const energyElapsedSec = Math.max(0, (now - lastEnergyTime) / 1000);
 
-    if (energyElapsedSec > 0 && user.energy < user.maxEnergy) {
-      const regenerated = energyElapsedSec * user.energyRegenRate;
-      user.energy = Math.min(user.maxEnergy, user.energy + regenerated);
+    if (energyElapsedSec >= 1 && user.energy < user.maxEnergy) {
+      const regenerated = Math.floor(energyElapsedSec * user.energyRegenRate);
+      if (regenerated > 0) {
+        user.energy = Math.min(user.maxEnergy, user.energy + regenerated);
+        (user as any).lastEnergyTimestamp = now;
+      }
+    } else if (user.energy >= user.maxEnergy) {
       (user as any).lastEnergyTimestamp = now;
     }
 
-    // 2. Calculate unclaimed passive income
-    const passiveElapsedSec = Math.max(0, Math.floor((now - user.lastPassiveClaimTimestamp) / 1000));
+    // 2. Credit continuous passive income (profitPerHour) right on time
+    const passiveElapsedSec = Math.max(0, (now - (user.lastPassiveClaimTimestamp || now)) / 1000);
     const cappedPassiveSec = Math.min(passiveElapsedSec, user.maxOfflineHours * 3600);
-    if (user.profitPerHour > 0) {
-      user.unclaimedPassive = Math.floor((user.profitPerHour / 3600) * cappedPassiveSec);
+    if (user.profitPerHour > 0 && cappedPassiveSec > 0) {
+      if (passiveElapsedSec < 120) {
+        // Active session: continuously add profitPerHour directly to balance on time
+        const activeEarned = (user.profitPerHour / 3600) * cappedPassiveSec;
+        user.balance += activeEarned;
+        user.totalEarned += activeEarned;
+        user.lastPassiveClaimTimestamp = now;
+        user.unclaimedPassive = 0;
+      } else {
+        // Offline session (>= 2 mins away): show in offline modal OR auto-claim
+        user.unclaimedPassive = Math.floor((user.profitPerHour / 3600) * cappedPassiveSec);
+      }
     } else {
       user.unclaimedPassive = 0;
+      user.lastPassiveClaimTimestamp = now;
     }
 
     // 3. Daily check-in eligibility
     const todayStr = new Date(now).toISOString().split('T')[0];
     user.canClaimDaily = user.lastDailyClaimDate !== todayStr;
 
-    // 4. Update Level
-    const lvl = this.calculateLevel(user.totalEarned);
-    user.level = lvl.level;
-    user.levelName = lvl.name;
-    user.currentLevelMinCoins = lvl.min;
-    user.nextLevelMinCoins = lvl.nextMin;
+    // 4. Update Level (including upgrade progression value)
+    reconcileUserLevel(user, this.getUpgrades());
+
+    if (user.level >= 2) {
+      this.checkTaskProgress(user, 'reach_silver', user.level, false);
+    }
+    if (user.level >= 3) {
+      this.checkTaskProgress(user, 'reach_gold', user.level, false);
+    }
 
     return user;
   }
@@ -465,6 +493,41 @@ class DatabaseStore {
     return { success: true, state: user };
   }
 
+  public getUpgrades(): UpgradeDefinition[] {
+    const customList = this.data.customUpgrades || [];
+    const deletedSet = new Set(this.data.deletedUpgradeIds || []);
+    const customMap = new Map<string, UpgradeDefinition>();
+    for (const c of customList) {
+      customMap.set(c.id, c);
+    }
+
+    const merged: UpgradeDefinition[] = [];
+    for (const def of UPGRADES) {
+      if (deletedSet.has(def.id)) continue;
+      if (customMap.has(def.id)) {
+        merged.push(customMap.get(def.id)!);
+        customMap.delete(def.id);
+      } else {
+        merged.push(def);
+      }
+    }
+
+    for (const remaining of customMap.values()) {
+      if (!deletedSet.has(remaining.id)) {
+        merged.push(remaining);
+      }
+    }
+
+    return merged;
+  }
+
+  public getWheelPrizes(): LuckyWheelPrize[] {
+    if (this.data.wheelPrizes && this.data.wheelPrizes.length > 0) {
+      return this.data.wheelPrizes;
+    }
+    return LUCKY_WHEEL_PRIZES;
+  }
+
   // Upgrade calculation & purchase
   public getUpgradePrice(upgrade: UpgradeDefinition, currentLevel: number): number {
     return Math.floor(upgrade.basePrice * Math.pow(upgrade.priceMultiplier, currentLevel));
@@ -474,7 +537,8 @@ class DatabaseStore {
     const user = this.data.users[userId];
     if (!user) return { success: false, error: 'User not found' };
 
-    const upgrade = UPGRADES.find((u) => u.id === upgradeId);
+    const allUpgrades = this.getUpgrades();
+    const upgrade = allUpgrades.find((u) => u.id === upgradeId);
     if (!upgrade) return { success: false, error: 'Upgrade not found' };
 
     const currentLvl = user.upgrades[upgradeId] || 0;
@@ -484,9 +548,14 @@ class DatabaseStore {
       return { success: false, error: 'Insufficient FOX balance' };
     }
 
-    // Atomic balance deduction
+    // Atomic balance deduction + Upgrade XP progression toward next Fox Level
     user.balance -= price;
+    user.totalEarned = Math.max(user.totalEarned || 0, user.balance + price) + getUpgradeXpBonus(price);
     user.upgrades[upgradeId] = currentLvl + 1;
+
+    if (upgrade.benefitType === 'max_energy') {
+      user.energy += upgrade.baseBenefit;
+    }
 
     // Recalculate derived benefits
     this.recalculatePlayerStats(user);
@@ -514,8 +583,9 @@ class DatabaseStore {
     let energyRegen = GAME_CONSTANTS.BASE_ENERGY_REGEN_PER_SEC;
     let profitPerHour = 0;
 
+    const allUpgrades = this.getUpgrades();
     for (const [upId, lvl] of Object.entries(user.upgrades)) {
-      const upDef = UPGRADES.find((u) => u.id === upId);
+      const upDef = allUpgrades.find((u) => u.id === upId);
       if (!upDef) continue;
 
       if (upDef.benefitType === 'tap_power') {
@@ -541,22 +611,19 @@ class DatabaseStore {
     if (!user) return { success: false, error: 'User not found' };
 
     const now = Date.now();
-    this.refreshUserState(user, now);
-
-    const elapsedSec = Math.max(0, Math.floor((now - user.lastPassiveClaimTimestamp) / 1000));
+    const elapsedSec = Math.max(0, (now - (user.lastPassiveClaimTimestamp || now)) / 1000);
     const cappedSec = Math.min(elapsedSec, user.maxOfflineHours * 3600);
-    const amount = Math.floor((user.profitPerHour / 3600) * cappedSec);
+    const amount = Math.max(user.unclaimedPassive || 0, Math.floor((user.profitPerHour / 3600) * cappedSec));
 
-    if (amount <= 0) {
-      return { success: false, error: 'No passive income accumulated yet' };
+    if (amount > 0) {
+      user.balance += amount;
+      user.totalEarned += amount;
+      this.addAuditLog(user.id, 'passive', amount, user.balance, `Claimed ${amount} offline FOX`);
     }
 
-    user.balance += amount;
-    user.totalEarned += amount;
     user.lastPassiveClaimTimestamp = now;
     user.unclaimedPassive = 0;
 
-    this.addAuditLog(user.id, 'passive', amount, user.balance, `Claimed ${amount} offline FOX`);
     this.refreshUserState(user, now);
     this.save();
     return { success: true, state: user, claimedAmount: amount };
@@ -690,6 +757,55 @@ class DatabaseStore {
 
     this.save();
     return { success: true, state: user };
+  }
+
+  // Daily 24-Hour Lucky Wheel Spin
+  public spinLuckyWheel(userId: string): {
+    success: boolean;
+    state?: UserGameState;
+    prize?: LuckyWheelPrize;
+    prizeIndex?: number;
+    error?: string;
+  } {
+    const user = this.data.users[userId];
+    if (!user) return { success: false, error: 'User not found' };
+
+    const now = Date.now();
+    this.refreshUserState(user, now);
+
+    const lastSpin = user.boosters.lastWheelSpinTimestamp || 0;
+    const elapsed = now - lastSpin;
+    if (elapsed < GAME_CONSTANTS.WHEEL_COOLDOWN_MS) {
+      const remainingSec = Math.ceil((GAME_CONSTANTS.WHEEL_COOLDOWN_MS - elapsed) / 1000);
+      const hours = Math.floor(remainingSec / 3600);
+      const mins = Math.floor((remainingSec % 3600) / 60);
+      return {
+        success: false,
+        error: `Lucky Wheel is cooling down. Next free spin in ${hours}h ${mins}m.`,
+      };
+    }
+
+    const { prize, index: prizeIndex } = pickLuckyWheelPrize(this.getWheelPrizes());
+    user.boosters.lastWheelSpinTimestamp = now;
+
+    if (prize.type === 'coins') {
+      user.balance += prize.amount;
+      user.totalEarned += prize.amount;
+      this.addAuditLog(user.id, 'daily', prize.amount, user.balance, `Lucky Wheel Win: ${prize.label}`);
+    } else if (prize.type === 'full_energy') {
+      user.energy = user.maxEnergy;
+      user.boosters.fullEnergyRemaining += prize.amount;
+      (user as any).lastEnergyTimestamp = now;
+      this.addAuditLog(user.id, 'boost', 0, user.balance, `Lucky Wheel Win: ${prize.label}`);
+    } else if (prize.type === 'turbo') {
+      const baseUntil = Math.max(now, user.boosters.turboActiveUntil || 0);
+      user.boosters.turboActiveUntil = baseUntil + prize.amount * 1000;
+      this.addAuditLog(user.id, 'boost', 0, user.balance, `Lucky Wheel Win: ${prize.label}`);
+    }
+
+    this.refreshUserState(user, now);
+    this.save();
+    return { success: true, state: user, prize, prizeIndex };
   }
 
   // 10-Friend Milestone Claim (10 friends = 10,000 FOX / $10 USD)
@@ -934,6 +1050,102 @@ class DatabaseStore {
     }
     return false;
   }
+
+  public getAllUsers(): UserGameState[] {
+    const all = Object.values(this.data.users).map((u) => this.refreshUserState(u));
+    return all.sort((a, b) => {
+      const aIsSeed = a.id.startsWith('seed_');
+      const bIsSeed = b.id.startsWith('seed_');
+      if (aIsSeed !== bIsSeed) return aIsSeed ? 1 : -1;
+      return b.balance - a.balance;
+    });
+  }
+
+  public adminAdjustUserBalance(params: {
+    userId: string;
+    amount: number;
+    operation: 'add' | 'deduct' | 'set';
+    balanceType?: 'main' | 'referral';
+  }): { success: boolean; user?: UserGameState; error?: string } {
+    const user = this.data.users[params.userId];
+    if (!user) {
+      return { success: false, error: 'User not found' };
+    }
+
+    const cleanAmount = Math.max(0, Math.floor(Number(params.amount) || 0));
+    const balanceType = params.balanceType || 'main';
+
+    if (balanceType === 'referral') {
+      if (params.operation === 'add') {
+        user.referralEarnings = Math.max(0, (user.referralEarnings || 0) + cleanAmount);
+        user.balance = Math.max(0, user.balance + cleanAmount);
+        user.totalEarned += cleanAmount;
+      } else if (params.operation === 'deduct') {
+        user.referralEarnings = Math.max(0, (user.referralEarnings || 0) - cleanAmount);
+        user.balance = Math.max(0, user.balance - cleanAmount);
+      } else if (params.operation === 'set') {
+        user.referralEarnings = cleanAmount;
+      }
+    } else {
+      if (params.operation === 'add') {
+        user.balance = Math.max(0, user.balance + cleanAmount);
+        user.totalEarned += cleanAmount;
+      } else if (params.operation === 'deduct') {
+        user.balance = Math.max(0, user.balance - cleanAmount);
+      } else if (params.operation === 'set') {
+        user.balance = cleanAmount;
+        if (cleanAmount > user.totalEarned) {
+          user.totalEarned = cleanAmount;
+        }
+      }
+    }
+
+    this.refreshUserState(user);
+    this.save();
+    return { success: true, user };
+  }
+
+  public adminSaveUpgrade(card: UpgradeDefinition): UpgradeDefinition[] {
+    this.data.customUpgrades = this.data.customUpgrades || [];
+    this.data.deletedUpgradeIds = (this.data.deletedUpgradeIds || []).filter((id) => id !== card.id);
+
+    const idx = this.data.customUpgrades.findIndex((u) => u.id === card.id);
+    if (idx >= 0) {
+      this.data.customUpgrades[idx] = card;
+    } else {
+      this.data.customUpgrades.push(card);
+    }
+
+    // Recalculate all players' stats so updated card/gift benefits apply immediately
+    for (const u of Object.values(this.data.users)) {
+      this.recalculatePlayerStats(u);
+    }
+
+    this.save();
+    return this.getUpgrades();
+  }
+
+  public adminDeleteUpgrade(upgradeId: string): UpgradeDefinition[] {
+    this.data.customUpgrades = (this.data.customUpgrades || []).filter((u) => u.id !== upgradeId);
+    this.data.deletedUpgradeIds = this.data.deletedUpgradeIds || [];
+    if (!this.data.deletedUpgradeIds.includes(upgradeId)) {
+      this.data.deletedUpgradeIds.push(upgradeId);
+    }
+
+    for (const u of Object.values(this.data.users)) {
+      this.recalculatePlayerStats(u);
+    }
+
+    this.save();
+    return this.getUpgrades();
+  }
+
+  public adminSaveWheelPrizes(prizes: LuckyWheelPrize[]): LuckyWheelPrize[] {
+    this.data.wheelPrizes = prizes;
+    this.save();
+    return this.getWheelPrizes();
+  }
 }
 
 export const db = new DatabaseStore();
+

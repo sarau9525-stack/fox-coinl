@@ -1,10 +1,10 @@
 import React from 'react';
-import { Pickaxe, CheckSquare, Users, Trophy, ArrowLeftRight } from 'lucide-react';
+import { Pickaxe, CheckSquare, Users, Trophy, ArrowLeftRight, Gift } from 'lucide-react';
 import { sound } from '../utils/audio.js';
 import { TelegramService } from '../utils/telegram.js';
 import { foxGoldCoinImg } from '../assets/assets.js';
 
-export type NavTab = 'home' | 'upgrades' | 'trade' | 'tasks' | 'friends' | 'leaderboard';
+export type NavTab = 'home' | 'upgrades' | 'gifts' | 'trade' | 'tasks' | 'friends' | 'leaderboard';
 
 interface NavigationProps {
   activeTab: NavTab;
@@ -38,6 +38,11 @@ export const Navigation: React.FC<NavigationProps> = ({
       badge: hasUnclaimedPassive,
     },
     {
+      id: 'gifts',
+      label: 'Gifts',
+      icon: <Gift className="w-5 h-5" />,
+    },
+    {
       id: 'trade',
       label: 'Trade',
       icon: <ArrowLeftRight className="w-5 h-5" />,
@@ -68,8 +73,8 @@ export const Navigation: React.FC<NavigationProps> = ({
   };
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto z-40 bg-[#0B0E17]/95 backdrop-blur-md border-t border-slate-800/80 px-1.5 py-1.5 pb-safe">
-      <div className="grid grid-cols-6 gap-0.5 items-center">
+    <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto z-40 bg-[#0B0E17]/95 backdrop-blur-md border-t border-slate-800/80 px-1 py-1.5 pb-safe">
+      <div className="grid grid-cols-7 gap-0.5 items-center">
         {tabs.map((t) => {
           const isActive = activeTab === t.id;
 
@@ -97,3 +102,4 @@ export const Navigation: React.FC<NavigationProps> = ({
     </nav>
   );
 };
+

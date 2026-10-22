@@ -11,11 +11,17 @@ import {
   TASKS,
   DAILY_REWARDS,
   GAME_CONSTANTS,
+  LUCKY_WHEEL_PRIZES,
+  pickLuckyWheelPrize,
+  reconcileUserLevel,
+  getUpgradeXpBonus,
 } from '../../server/gameConfig.js';
 import {
   UserGameState,
   LeaderboardEntry,
   TradeOrder,
+  UpgradeDefinition,
+  LuckyWheelPrize,
 } from '../../src/types/game.js';
 
 export interface CloudflareEnv {
@@ -46,6 +52,8 @@ const processedUpdates = new Set<number>();
 // In-memory edge database with persistence to Cloudflare D1 and KV if configured
 const edgeUsers = new Map<string, UserGameState>();
 const edgeTrades: TradeOrder[] = [];
+let edgeUpgrades: UpgradeDefinition[] = [...UPGRADES];
+let edgeWheelPrizes: LuckyWheelPrize[] = [...LUCKY_WHEEL_PRIZES];
 let edgeBotConfig = {
   webhookUrl: '',
   webhookSecret: '',
@@ -448,7 +456,7 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-admin-secret, x-telegram-bot-api-secret-token',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-admin-secret, x-fox-sync, x-telegram-bot-api-secret-token',
       },
     });
   };
@@ -460,20 +468,141 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
       headers: {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-admin-secret, x-telegram-bot-api-secret-token',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-admin-secret, x-fox-sync, x-telegram-bot-api-secret-token',
         'Access-Control-Max-Age': '86400',
       },
     });
   }
 
-  // Auth helper
+  // Recalculate derived stats from upgrades & gifts on Cloudflare Edge
+  const recalculateEdgePlayerStats = (user: UserGameState) => {
+    let tapPower = GAME_CONSTANTS.BASE_TAP_POWER;
+    let maxEnergy = GAME_CONSTANTS.BASE_MAX_ENERGY;
+    let energyRegen = GAME_CONSTANTS.BASE_ENERGY_REGEN_PER_SEC;
+    let profitPerHour = 0;
+
+    for (const [upId, lvl] of Object.entries(user.upgrades || {})) {
+      const upDef = edgeUpgrades.find((u) => u.id === upId);
+      if (!upDef || !lvl) continue;
+
+      if (upDef.benefitType === 'tap_power') {
+        tapPower += upDef.baseBenefit * lvl;
+      } else if (upDef.benefitType === 'max_energy') {
+        maxEnergy += upDef.baseBenefit * lvl;
+      } else if (upDef.benefitType === 'energy_regen') {
+        energyRegen += upDef.baseBenefit * lvl;
+      } else if (upDef.benefitType === 'profit_per_hour') {
+        profitPerHour += upDef.baseBenefit * lvl;
+      }
+    }
+
+    user.tapPower = tapPower;
+    user.maxEnergy = maxEnergy;
+    user.energyRegenRate = energyRegen;
+    user.profitPerHour = profitPerHour;
+  };
+
+  // Refresh energy & credit continuous profitPerHour on time on Cloudflare Edge
+  const refreshEdgeUserState = (user: UserGameState, now: number = Date.now()): UserGameState => {
+    recalculateEdgePlayerStats(user);
+
+    const lastEnergyTime = (user as any).lastEnergyTimestamp || user.createdAt || now;
+    const energyElapsedSec = Math.max(0, (now - lastEnergyTime) / 1000);
+    if (energyElapsedSec >= 1 && user.energy < user.maxEnergy) {
+      const regenerated = Math.floor(energyElapsedSec * user.energyRegenRate);
+      if (regenerated > 0) {
+        user.energy = Math.min(user.maxEnergy, user.energy + regenerated);
+        (user as any).lastEnergyTimestamp = now;
+      }
+    } else if (user.energy >= user.maxEnergy) {
+      (user as any).lastEnergyTimestamp = now;
+    }
+
+    const passiveElapsedSec = Math.max(0, (now - (user.lastPassiveClaimTimestamp || now)) / 1000);
+    const cappedPassiveSec = Math.min(passiveElapsedSec, (user.maxOfflineHours || 3) * 3600);
+    if (user.profitPerHour > 0 && cappedPassiveSec > 0) {
+      if (passiveElapsedSec < 120) {
+        const activeEarned = (user.profitPerHour / 3600) * cappedPassiveSec;
+        user.balance += activeEarned;
+        user.totalEarned += activeEarned;
+        user.lastPassiveClaimTimestamp = now;
+        user.unclaimedPassive = 0;
+      } else {
+        user.unclaimedPassive = Math.floor((user.profitPerHour / 3600) * cappedPassiveSec);
+      }
+    } else {
+      user.unclaimedPassive = 0;
+      user.lastPassiveClaimTimestamp = now;
+    }
+
+    const todayStr = new Date(now).toISOString().split('T')[0];
+    user.canClaimDaily = user.lastDailyClaimDate !== todayStr;
+
+    reconcileUserLevel(user, edgeUpgrades);
+
+    return user;
+  };
+
+  // Parse client sync snapshot header to prevent cold-start state loss across Cloudflare Edge isolates
+  const parseClientSyncUser = (): UserGameState | null => {
+    const syncHeader = request.headers.get('x-fox-sync');
+    if (!syncHeader) return null;
+    try {
+      const jsonStr = decodeURIComponent(Buffer.from(syncHeader, 'base64').toString('utf8'));
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && typeof parsed.id === 'string') {
+        return parsed as UserGameState;
+      }
+    } catch {}
+    return null;
+  };
+
+  // Auth helper with automatic cold-start isolate rehydration
   const getAuthUser = (): UserGameState | null => {
     const authHeader = request.headers.get('authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
     const token = authHeader.replace('Bearer ', '').trim();
     const userId = verifyToken(token, env.SESSION_SECRET);
     if (!userId) return null;
-    return edgeUsers.get(userId) || null;
+
+    let user = edgeUsers.get(userId) || null;
+    const syncedClient = parseClientSyncUser();
+
+    if (!user) {
+      if (syncedClient && syncedClient.id === userId) {
+        user = {
+          ...syncedClient,
+          upgrades: syncedClient.upgrades || {},
+          tasks: syncedClient.tasks || {},
+          boosters: syncedClient.boosters || {
+            fullEnergyRemaining: 6,
+            nextFullEnergyAt: 0,
+            turboActiveUntil: 0,
+            nextTurboAt: 0,
+          },
+        };
+        edgeUsers.set(userId, user);
+      } else {
+        user = createNewUserRecord(userId, `Fox_${userId.slice(-4)}`, userId.startsWith('tg_'), userId.startsWith('guest_'));
+      }
+    } else if (syncedClient && syncedClient.id === userId) {
+      // Reconcile if client hit a different Cloudflare isolate previously
+      if (syncedClient.upgrades) {
+        for (const [upId, lvl] of Object.entries(syncedClient.upgrades)) {
+          if ((lvl || 0) > (user.upgrades[upId] || 0)) {
+            user.upgrades[upId] = lvl;
+          }
+        }
+      }
+      if ((syncedClient.totalEarned || 0) > (user.totalEarned || 0)) {
+        user.totalEarned = syncedClient.totalEarned;
+      }
+      if ((syncedClient.totalTaps || 0) > (user.totalTaps || 0)) {
+        user.totalTaps = syncedClient.totalTaps;
+      }
+    }
+
+    return refreshEdgeUserState(user);
   };
 
   const checkIsAdmin = (user: UserGameState | null): boolean => {
@@ -501,7 +630,8 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
   // 2. Game Config
   if (pathname === '/api/game/config') {
     return jsonResponse({
-      upgrades: UPGRADES,
+      upgrades: edgeUpgrades,
+      wheelPrizes: edgeWheelPrizes,
       levels: PLAYER_LEVELS,
       tasks: TASKS,
       dailyRewards: DAILY_REWARDS,
@@ -517,7 +647,7 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
       body = await request.json();
     } catch {}
     const guestId = `guest_${Math.random().toString(36).substring(2, 9)}`;
-    const guestUser = createNewUserRecord(guestId, `Guest_${guestId.slice(-4)}`, false, true, body.refCode);
+    const guestUser = createNewUserRecord(guestId, body.username || `Guest_${guestId.slice(-4)}`, false, true, body.refCode);
     const token = createToken(guestId, env.SESSION_SECRET);
 
     if (env.DB) await persistUserToD1(env.DB, guestUser);
@@ -555,6 +685,7 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
       user.displayName = `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim() || user.username;
     }
 
+    refreshEdgeUserState(user);
     const token = createToken(userId, env.SESSION_SECRET);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ token, user });
@@ -573,7 +704,8 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     const userId = `web_${Math.random().toString(36).substring(2, 9)}`;
     const user = createNewUserRecord(userId, username || email.split('@')[0], false, false, refCode);
     user.email = email;
-    if (env.ADMIN_EMAIL && email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase()) {
+    const adminEmail = (env.ADMIN_EMAIL || 'k39127031@gmail.com').toLowerCase().trim();
+    if (email.toLowerCase().trim() === adminEmail) {
       user.isAdmin = true;
     }
 
@@ -590,14 +722,15 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     const { email } = body;
     let found = Array.from(edgeUsers.values()).find((u) => u.email === email);
     if (!found) {
-      // Auto-create for demo seamless login
       const userId = `web_${Math.random().toString(36).substring(2, 9)}`;
       found = createNewUserRecord(userId, email.split('@')[0], false, false);
       found.email = email;
-      if (env.ADMIN_EMAIL && email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase()) {
+      const adminEmail = (env.ADMIN_EMAIL || 'k39127031@gmail.com').toLowerCase().trim();
+      if (email.toLowerCase().trim() === adminEmail) {
         found.isAdmin = true;
       }
     }
+    refreshEdgeUserState(found);
     const token = createToken(found.id, env.SESSION_SECRET);
     if (env.DB) await persistUserToD1(env.DB, found);
     return jsonResponse({ token, user: found });
@@ -619,21 +752,21 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     } catch {}
     const count = Math.min(Math.max(1, body.tapCount || 1), 100);
 
-    const isTurbo = user.boosters.turboActiveUntil > Date.now();
+    const now = Date.now();
+    const isTurbo = user.boosters.turboActiveUntil > now;
     const tapMultiplier = isTurbo ? 3 : 1;
-    const earned = user.tapPower * tapMultiplier * count;
+    const actualTaps = isTurbo ? count : Math.min(count, Math.floor(user.energy));
+    const earned = user.tapPower * tapMultiplier * actualTaps;
 
     user.balance += earned;
     user.totalEarned += earned;
-    user.totalTaps += count;
-    user.energy = Math.max(0, user.energy - count);
+    user.totalTaps += actualTaps;
+    if (!isTurbo) {
+      user.energy = Math.max(0, user.energy - actualTaps);
+    }
+    (user as any).lastEnergyTimestamp = now;
 
-    const levelObj = getPlayerLevel(user.balance);
-    user.level = levelObj.level;
-    user.levelName = levelObj.name;
-    user.currentLevelMinCoins = levelObj.minCoins;
-    user.nextLevelMinCoins = getNextPlayerLevel(levelObj.level).minCoins;
-
+    refreshEdgeUserState(user, now);
     edgeUsers.set(user.id, user);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ user });
@@ -646,27 +779,22 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     try {
       body = await request.json();
     } catch {}
-    const upgrade = UPGRADES.find((u) => u.id === body.upgradeId);
+    const upgrade = edgeUpgrades.find((u) => u.id === body.upgradeId);
     if (!upgrade) return jsonResponse({ error: 'Upgrade not found' }, 400);
 
     const currentLevel = user.upgrades[upgrade.id] || 0;
     const price = Math.floor(upgrade.basePrice * Math.pow(upgrade.priceMultiplier, currentLevel));
-    if (user.balance < price) return jsonResponse({ error: 'Insufficient balance' }, 400);
+    if (user.balance < price) return jsonResponse({ error: 'Insufficient FOX balance' }, 400);
 
     user.balance -= price;
+    user.totalEarned = Math.max(user.totalEarned || 0, user.balance + price) + getUpgradeXpBonus(price);
     user.upgrades[upgrade.id] = currentLevel + 1;
 
-    if (upgrade.benefitType === 'tap_power') {
-      user.tapPower += upgrade.baseBenefit;
-    } else if (upgrade.benefitType === 'max_energy') {
-      user.maxEnergy += upgrade.baseBenefit;
+    if (upgrade.benefitType === 'max_energy') {
       user.energy += upgrade.baseBenefit;
-    } else if (upgrade.benefitType === 'profit_per_hour') {
-      user.profitPerHour += upgrade.baseBenefit;
-    } else if (upgrade.benefitType === 'energy_regen') {
-      user.energyRegenRate += upgrade.baseBenefit;
     }
 
+    refreshEdgeUserState(user);
     edgeUsers.set(user.id, user);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ user });
@@ -675,6 +803,10 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
   if (pathname === '/api/game/claim-daily' && method === 'POST') {
     const user = getAuthUser();
     if (!user) return jsonResponse({ error: 'Unauthorized' }, 401);
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (user.lastDailyClaimDate === todayStr) {
+      return jsonResponse({ error: 'Daily reward already claimed today' }, 400);
+    }
     const day = (user.dailyStreak % 7) + 1;
     const rewardItem = DAILY_REWARDS.find((r) => r.day === day) || DAILY_REWARDS[0];
     const rewardAmount = rewardItem.coins;
@@ -682,9 +814,10 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     user.balance += rewardAmount;
     user.totalEarned += rewardAmount;
     user.dailyStreak += 1;
-    user.lastDailyClaimDate = new Date().toISOString().split('T')[0];
+    user.lastDailyClaimDate = todayStr;
     user.canClaimDaily = false;
 
+    refreshEdgeUserState(user);
     edgeUsers.set(user.id, user);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ user, rewardAmount });
@@ -693,11 +826,18 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
   if (pathname === '/api/game/claim-passive' && method === 'POST') {
     const user = getAuthUser();
     if (!user) return jsonResponse({ error: 'Unauthorized' }, 401);
-    const amount = user.unclaimedPassive;
-    user.balance += amount;
-    user.totalEarned += amount;
+    const now = Date.now();
+    const elapsedSec = Math.max(0, (now - (user.lastPassiveClaimTimestamp || now)) / 1000);
+    const cappedSec = Math.min(elapsedSec, (user.maxOfflineHours || 3) * 3600);
+    const amount = Math.max(user.unclaimedPassive || 0, Math.floor((user.profitPerHour / 3600) * cappedSec));
+
+    if (amount > 0) {
+      user.balance += amount;
+      user.totalEarned += amount;
+    }
     user.unclaimedPassive = 0;
-    user.lastPassiveClaimTimestamp = Date.now();
+    user.lastPassiveClaimTimestamp = now;
+    refreshEdgeUserState(user, now);
     edgeUsers.set(user.id, user);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ user, claimedAmount: amount });
@@ -725,6 +865,7 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     };
     user.balance += task.reward;
     user.totalEarned += task.reward;
+    refreshEdgeUserState(user);
     edgeUsers.set(user.id, user);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ user, reward: task.reward });
@@ -737,17 +878,59 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     try {
       body = await request.json();
     } catch {}
+    const now = Date.now();
     if (body.type === 'full_energy') {
+      if (user.boosters.fullEnergyRemaining <= 0) {
+        return jsonResponse({ error: 'Daily Full Energy refills depleted' }, 400);
+      }
       user.energy = user.maxEnergy;
       user.boosters.fullEnergyRemaining = Math.max(0, user.boosters.fullEnergyRemaining - 1);
-      user.boosters.nextFullEnergyAt = Date.now() + 60 * 60 * 1000;
+      (user as any).lastEnergyTimestamp = now;
     } else if (body.type === 'turbo') {
-      user.boosters.turboActiveUntil = Date.now() + 30 * 1000;
-      user.boosters.nextTurboAt = Date.now() + 2 * 60 * 60 * 1000;
+      user.boosters.turboActiveUntil = now + GAME_CONSTANTS.TURBO_DURATION_MS;
+      user.boosters.nextTurboAt = now + 60 * 1000;
     }
+    refreshEdgeUserState(user, now);
     edgeUsers.set(user.id, user);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ user });
+  }
+
+  // Daily 24-Hour Lucky Wheel Spin
+  if (pathname === '/api/game/spin-wheel' && method === 'POST') {
+    const user = getAuthUser();
+    if (!user) return jsonResponse({ error: 'Unauthorized' }, 401);
+
+    const now = Date.now();
+    const lastSpin = user.boosters.lastWheelSpinTimestamp || 0;
+    const elapsed = now - lastSpin;
+
+    if (elapsed < GAME_CONSTANTS.WHEEL_COOLDOWN_MS) {
+      const remainingSec = Math.ceil((GAME_CONSTANTS.WHEEL_COOLDOWN_MS - elapsed) / 1000);
+      const hours = Math.floor(remainingSec / 3600);
+      const mins = Math.floor((remainingSec % 3600) / 60);
+      return jsonResponse({ error: `Lucky Wheel is cooling down. Next free spin in ${hours}h ${mins}m.` }, 400);
+    }
+
+    const { prize, index: prizeIndex } = pickLuckyWheelPrize(edgeWheelPrizes);
+    user.boosters.lastWheelSpinTimestamp = now;
+
+    if (prize.type === 'coins') {
+      user.balance += prize.amount;
+      user.totalEarned += prize.amount;
+    } else if (prize.type === 'full_energy') {
+      user.energy = user.maxEnergy;
+      user.boosters.fullEnergyRemaining += prize.amount;
+      (user as any).lastEnergyTimestamp = now;
+    } else if (prize.type === 'turbo') {
+      const baseUntil = Math.max(now, user.boosters.turboActiveUntil || 0);
+      user.boosters.turboActiveUntil = baseUntil + prize.amount * 1000;
+    }
+
+    refreshEdgeUserState(user, now);
+    edgeUsers.set(user.id, user);
+    if (env.DB) await persistUserToD1(env.DB, user);
+    return jsonResponse({ user, prize, prizeIndex });
   }
 
   // 10-Friends Milestone Claim: 10 friends = 10,000 FOX ($10 USD)
@@ -769,6 +952,7 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     user.referralEarnings = (user.referralEarnings || 0) + bonus;
     user.claimedMilestones = milestonesAchieved;
 
+    refreshEdgeUserState(user);
     edgeUsers.set(user.id, user);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ success: true, user, claimedCount: unclaimed, bonus });
@@ -787,6 +971,7 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
       user.totalEarned += bonus;
     }
 
+    refreshEdgeUserState(user);
     edgeUsers.set(user.id, user);
     if (env.DB) await persistUserToD1(env.DB, user);
     return jsonResponse({ success: true, user, bonus });
@@ -861,6 +1046,7 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
   if (pathname === '/api/game/leaderboard') {
     const user = getAuthUser();
     const sorted = Array.from(edgeUsers.values())
+      .map((u) => refreshEdgeUserState(u))
       .sort((a, b) => b.balance - a.balance)
       .slice(0, 50);
 
@@ -876,10 +1062,14 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
       isCurrentPlayer: user?.id === u.id,
     }));
 
+    const playerEntry = entries.find((e) => e.isCurrentPlayer);
+
     return jsonResponse({
+      list: entries,
+      playerEntry,
       entries,
       totalPlayers: edgeUsers.size,
-      currentUserRank: entries.find((e) => e.isCurrentPlayer)?.rank || 1,
+      currentUserRank: playerEntry?.rank || 1,
     });
   }
 
@@ -925,15 +1115,16 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
         const command = text.split(' ')[0].toLowerCase();
         const appUrl = env.APP_URL || url.origin;
 
-        const channelHandle = env.TELEGRAM_CHANNEL || '@FoxCoinOfficial';
-        const channelUrl = `https://t.me/${channelHandle.replace('@', '')}`;
+        const channelHandle = env.TELEGRAM_CHANNEL || '@FOX_COINEX';
+        const channelUrl = 'https://t.me/FOX_COINEX';
+        const youtubeUrl = 'https://www.youtube.com/@FOX-COINl';
 
         if (command === '/start') {
           const greeting =
             `🦊 <b>Welcome to FOXCOIN!</b>\n\n` +
             `💰 <b>Tap to mine FOX, invite friends for $10 USD per 10 invites, and trade referral rewards on our crypto exchange!</b>\n\n` +
-            `📢 <b>Mandatory Requirement:</b> You must join our official channel <b>${channelHandle}</b> to activate mining and withdrawals.\n\n` +
-            `👇 <b>Step 1: Join Channel, Step 2: Launch App:</b>`;
+            `📢 <b>Mandatory Requirement:</b> You must join both official channels (<b>${channelHandle}</b> on Telegram & <b>@FOX-COINl</b> on YouTube) to activate mining and withdrawals.\n\n` +
+            `👇 <b>Join Both Channels & Launch App:</b>`;
 
           await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
             method: 'POST',
@@ -946,13 +1137,19 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
                 inline_keyboard: [
                   [
                     {
-                      text: '📢 1. Join Official Channel',
+                      text: '📢 1. Join Telegram (@FOX_COINEX)',
                       url: channelUrl,
                     },
                   ],
                   [
                     {
-                      text: '🚀 2. Launch FOXCOIN Mini App 🦊',
+                      text: '▶️ 2. Subscribe YouTube (@FOX-COINl)',
+                      url: youtubeUrl,
+                    },
+                  ],
+                  [
+                    {
+                      text: '🚀 3. Launch FOXCOIN Mini App 🦊',
                       web_app: { url: appUrl },
                     },
                   ],
@@ -974,10 +1171,13 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               chat_id: chatId,
-              text: `🎮 Opening FOXCOIN Mini App... Make sure to join ${channelHandle}!`,
+              text: `🎮 Opening FOXCOIN Mini App... Make sure to join ${channelHandle} and subscribe on YouTube!`,
               reply_markup: {
                 inline_keyboard: [
-                  [{ text: '📢 Join Channel', url: channelUrl }],
+                  [
+                    { text: '📢 Telegram (@FOX_COINEX)', url: channelUrl },
+                    { text: '▶️ YouTube (@FOX-COINl)', url: youtubeUrl },
+                  ],
                   [{ text: '🎮 Play FOXCOIN', web_app: { url: appUrl } }],
                 ],
               },
@@ -1210,6 +1410,143 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
 
     edgeBotConfig.webhookUrl = '';
     return jsonResponse({ success: true, description: tgData.description });
+  }
+
+  if (pathname === '/api/admin/users' && method === 'GET') {
+    if (!isAdmin) return jsonResponse({ error: 'Forbidden' }, 403);
+    const list = Array.from(edgeUsers.values()).sort((a, b) => {
+      const aBot = a.id.startsWith('bot_');
+      const bBot = b.id.startsWith('bot_');
+      if (aBot !== bBot) return aBot ? 1 : -1;
+      return b.balance - a.balance;
+    });
+    return jsonResponse({ users: list });
+  }
+
+  if (pathname === '/api/admin/users/adjust-balance' && method === 'POST') {
+    if (!isAdmin) return jsonResponse({ error: 'Forbidden' }, 403);
+    let body: any = {};
+    try {
+      body = await request.json();
+    } catch {}
+    const { userId, amount, operation, balanceType } = body;
+    const targetUser = edgeUsers.get(userId);
+    if (!targetUser) return jsonResponse({ error: 'User not found' }, 404);
+
+    const cleanAmount = Math.max(0, Math.floor(Number(amount) || 0));
+    if (balanceType === 'referral') {
+      if (operation === 'add') {
+        targetUser.referralEarnings = Math.max(0, (targetUser.referralEarnings || 0) + cleanAmount);
+        targetUser.balance = Math.max(0, targetUser.balance + cleanAmount);
+        targetUser.totalEarned += cleanAmount;
+      } else if (operation === 'deduct') {
+        targetUser.referralEarnings = Math.max(0, (targetUser.referralEarnings || 0) - cleanAmount);
+        targetUser.balance = Math.max(0, targetUser.balance - cleanAmount);
+      } else if (operation === 'set') {
+        targetUser.referralEarnings = cleanAmount;
+      }
+    } else {
+      if (operation === 'add') {
+        targetUser.balance = Math.max(0, targetUser.balance + cleanAmount);
+        targetUser.totalEarned += cleanAmount;
+      } else if (operation === 'deduct') {
+        targetUser.balance = Math.max(0, targetUser.balance - cleanAmount);
+      } else if (operation === 'set') {
+        targetUser.balance = cleanAmount;
+        if (cleanAmount > targetUser.totalEarned) targetUser.totalEarned = cleanAmount;
+      }
+    }
+
+    refreshEdgeUserState(targetUser);
+
+    edgeUsers.set(userId, targetUser);
+    if (env.DB) await persistUserToD1(env.DB, targetUser);
+
+    const list = Array.from(edgeUsers.values()).sort((a, b) => {
+      const aBot = a.id.startsWith('bot_');
+      const bBot = b.id.startsWith('bot_');
+      if (aBot !== bBot) return aBot ? 1 : -1;
+      return b.balance - a.balance;
+    });
+
+    return jsonResponse({ success: true, user: targetUser, users: list });
+  }
+
+  // Admin: Save Upgrade Card or Fox Gift Price
+  if (pathname === '/api/admin/cards/save' && method === 'POST') {
+    if (!isAdmin) return jsonResponse({ error: 'Forbidden' }, 403);
+    let body: any = {};
+    try {
+      body = await request.json();
+    } catch {}
+    const { card } = body;
+    if (!card || !card.id || !card.name) {
+      return jsonResponse({ error: 'Valid card id and name required' }, 400);
+    }
+
+    const cleanCard: UpgradeDefinition = {
+      id: String(card.id).trim(),
+      name: String(card.name).trim(),
+      description: String(card.description || '').trim(),
+      category: ['tap', 'passive', 'special', 'gift'].includes(card.category) ? card.category : 'passive',
+      basePrice: Math.max(1, Math.floor(Number(card.basePrice) || 100)),
+      priceMultiplier: Math.max(1.05, Number(card.priceMultiplier) || 1.4),
+      benefitType: ['tap_power', 'profit_per_hour', 'max_energy', 'energy_regen'].includes(card.benefitType)
+        ? card.benefitType
+        : 'profit_per_hour',
+      baseBenefit: Math.max(1, Math.floor(Number(card.baseBenefit) || 100)),
+      levelRequirement: Math.max(1, Math.min(10, Math.floor(Number(card.levelRequirement) || 1))),
+      icon: String(card.icon || 'Rocket').trim(),
+    };
+
+    const idx = edgeUpgrades.findIndex((u) => u.id === cleanCard.id);
+    if (idx >= 0) {
+      edgeUpgrades[idx] = cleanCard;
+    } else {
+      edgeUpgrades.push(cleanCard);
+    }
+
+    return jsonResponse({ success: true, upgrades: edgeUpgrades });
+  }
+
+  // Admin: Delete Upgrade Card
+  if (pathname === '/api/admin/cards/delete' && method === 'POST') {
+    if (!isAdmin) return jsonResponse({ error: 'Forbidden' }, 403);
+    let body: any = {};
+    try {
+      body = await request.json();
+    } catch {}
+    if (!body.upgradeId) return jsonResponse({ error: 'upgradeId required' }, 400);
+
+    edgeUpgrades = edgeUpgrades.filter((u) => u.id !== String(body.upgradeId));
+    return jsonResponse({ success: true, upgrades: edgeUpgrades });
+  }
+
+  // Admin: Save Lucky Wheel Prizes
+  if (pathname === '/api/admin/wheel/save' && method === 'POST') {
+    if (!isAdmin) return jsonResponse({ error: 'Forbidden' }, 403);
+    let body: any = {};
+    try {
+      body = await request.json();
+    } catch {}
+    if (!Array.isArray(body.prizes) || body.prizes.length === 0) {
+      return jsonResponse({ error: 'Valid prizes array required' }, 400);
+    }
+
+    edgeWheelPrizes = body.prizes.map((p: any, idx: number) => ({
+      id: String(p.id || `wheel_${idx}`),
+      label: String(p.label || `+${Number(p.amount || 1000).toLocaleString()} FOX`),
+      shortLabel: String(p.shortLabel || `${Number(p.amount || 1000).toLocaleString()}`),
+      persianLabel: String(p.persianLabel || p.label || ''),
+      type: ['coins', 'full_energy', 'turbo'].includes(p.type) ? p.type : 'coins',
+      amount: Math.max(1, Math.floor(Number(p.amount) || 1000)),
+      weight: Math.max(0.1, Number(p.weight) || 10),
+      color: String(p.color || '#1E293B'),
+      accentColor: String(p.accentColor || '#F59E0B'),
+      rarity: ['common', 'rare', 'epic', 'jackpot'].includes(p.rarity) ? p.rarity : 'common',
+    }));
+
+    return jsonResponse({ success: true, wheelPrizes: edgeWheelPrizes });
   }
 
   // 8. Fallback for undefined edge API routes

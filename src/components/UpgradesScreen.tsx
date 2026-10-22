@@ -34,7 +34,7 @@ export const UpgradesScreen: React.FC<UpgradesScreenProps> = ({
   const [activeCategory, setActiveCategory] = useState<'all' | 'tap' | 'passive' | 'special'>('passive');
   const [purchasingId, setPurchasingId] = useState<string | null>(null);
 
-  // Icon mapping
+  // Icon mapping (supports both Lucide icons and emojis/custom icons)
   const renderIcon = (iconName: string) => {
     switch (iconName) {
       case 'Flame': return <Flame className="w-5 h-5 text-orange-400" />;
@@ -48,7 +48,11 @@ export const UpgradesScreen: React.FC<UpgradesScreenProps> = ({
       case 'ShieldCheck': return <ShieldCheck className="w-5 h-5 text-yellow-400" />;
       case 'Crown': return <Crown className="w-5 h-5 text-amber-300" />;
       case 'Sparkles': return <Sparkles className="w-5 h-5 text-sky-400" />;
-      default: return <Sparkles className="w-5 h-5 text-amber-400" />;
+      default:
+        if (iconName && iconName.trim().length <= 4) {
+          return <span className="text-xl leading-none select-none">{iconName}</span>;
+        }
+        return <Sparkles className="w-5 h-5 text-amber-400" />;
     }
   };
 
@@ -56,7 +60,12 @@ export const UpgradesScreen: React.FC<UpgradesScreenProps> = ({
     return Math.floor(up.basePrice * Math.pow(up.priceMultiplier, level));
   };
 
+  const passiveCount = upgrades.filter((u) => u.category === 'passive').length;
+  const tapCount = upgrades.filter((u) => u.category === 'tap').length;
+  const specialCount = upgrades.filter((u) => u.category === 'special').length;
+
   const filteredUpgrades = upgrades.filter((u) => {
+    if (u.category === 'gift') return false;
     if (activeCategory === 'all') return true;
     return u.category === activeCategory;
   });
@@ -110,33 +119,33 @@ export const UpgradesScreen: React.FC<UpgradesScreenProps> = ({
       <div className="grid grid-cols-3 gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800 mb-4 text-xs font-bold">
         <button
           onClick={() => setActiveCategory('passive')}
-          className={`py-2 rounded-lg transition ${
+          className={`py-2 rounded-lg transition cursor-pointer ${
             activeCategory === 'passive'
-              ? 'bg-amber-500 text-slate-950 shadow-md'
+              ? 'bg-amber-500 text-slate-950 shadow-md font-black'
               : 'text-slate-400 hover:text-white'
           }`}
         >
-          Enterprises
+          Enterprises ({passiveCount})
         </button>
         <button
           onClick={() => setActiveCategory('tap')}
-          className={`py-2 rounded-lg transition ${
+          className={`py-2 rounded-lg transition cursor-pointer ${
             activeCategory === 'tap'
-              ? 'bg-amber-500 text-slate-950 shadow-md'
+              ? 'bg-amber-500 text-slate-950 shadow-md font-black'
               : 'text-slate-400 hover:text-white'
           }`}
         >
-          Tapping
+          Tapping ({tapCount})
         </button>
         <button
           onClick={() => setActiveCategory('special')}
-          className={`py-2 rounded-lg transition ${
+          className={`py-2 rounded-lg transition cursor-pointer ${
             activeCategory === 'special'
-              ? 'bg-amber-500 text-slate-950 shadow-md'
+              ? 'bg-amber-500 text-slate-950 shadow-md font-black'
               : 'text-slate-400 hover:text-white'
           }`}
         >
-          Clan
+          Clan & VIP ({specialCount})
         </button>
       </div>
 
@@ -168,11 +177,14 @@ export const UpgradesScreen: React.FC<UpgradesScreenProps> = ({
                   </div>
 
                   <div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <h4 className="font-bold text-sm text-slate-100">{up.name}</h4>
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-slate-800 text-slate-300 border border-slate-700 rounded">
+                        Req Lvl {up.levelRequirement}
+                      </span>
                       {currentLevel > 0 && (
-                        <span className="px-1.5 py-0.2 text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded">
-                          Lvl {currentLevel}
+                        <span className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded">
+                          Owned Lvl {currentLevel}
                         </span>
                       )}
                     </div>
@@ -184,10 +196,10 @@ export const UpgradesScreen: React.FC<UpgradesScreenProps> = ({
                         {up.benefitType === 'profit_per_hour'
                           ? `+${up.baseBenefit.toLocaleString()} FOX/hr`
                           : up.benefitType === 'tap_power'
-                          ? `+${up.baseBenefit} per tap`
+                          ? `+${up.baseBenefit.toLocaleString()} per tap`
                           : up.benefitType === 'max_energy'
-                          ? `+${up.baseBenefit} max stamina`
-                          : `+${up.baseBenefit}/sec regen`}
+                          ? `+${up.baseBenefit.toLocaleString()} max stamina`
+                          : `+${up.baseBenefit.toLocaleString()}/sec regen`}
                       </span>
                     </div>
                   </div>

@@ -10,11 +10,15 @@ interface TasksScreenProps {
   user: UserGameState;
   tasks: TaskDefinition[];
   onClaimTask: (taskId: string) => Promise<void>;
+  onOpenWheel?: () => void;
 }
 
-export const TasksScreen: React.FC<TasksScreenProps> = ({ user, tasks, onClaimTask }) => {
+export const TasksScreen: React.FC<TasksScreenProps> = ({ user, tasks, onClaimTask, onOpenWheel }) => {
   const [activeTab, setActiveTab] = useState<'all' | 'daily' | 'progression' | 'social'>('all');
   const [claimingId, setClaimingId] = useState<string | null>(null);
+
+  const canSpinWheel =
+    Date.now() - (user.boosters.lastWheelSpinTimestamp || 0) >= 24 * 60 * 60 * 1000;
 
   const filteredTasks = tasks.filter((t) => {
     if (activeTab === 'all') return true;
@@ -82,7 +86,7 @@ export const TasksScreen: React.FC<TasksScreenProps> = ({ user, tasks, onClaimTa
   return (
     <div className="w-full max-w-md mx-auto px-4 pb-24 pt-2 text-white">
       {/* Banner */}
-      <div className="w-full bg-gradient-to-r from-orange-600/30 via-amber-500/20 to-slate-900 border border-amber-500/30 rounded-2xl p-4 mb-4 shadow-lg flex items-center justify-between">
+      <div className="w-full bg-gradient-to-r from-orange-600/30 via-amber-500/20 to-slate-900 border border-amber-500/30 rounded-2xl p-4 mb-3 shadow-lg flex items-center justify-between">
         <div>
           <h3 className="font-extrabold text-base text-amber-300 flex items-center gap-1.5">
             <Sparkles className="w-4 h-4 text-amber-400" /> Fox Mission Hub
@@ -95,6 +99,38 @@ export const TasksScreen: React.FC<TasksScreenProps> = ({ user, tasks, onClaimTa
           <Trophy className="w-6 h-6 text-amber-400" />
         </div>
       </div>
+
+      {/* Featured Daily Lucky Wheel Card */}
+      {onOpenWheel && (
+        <div
+          onClick={onOpenWheel}
+          className="w-full mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-purple-600/20 to-emerald-500/20 border border-amber-400/50 shadow-lg flex items-center justify-between cursor-pointer hover:border-amber-300 transition active:scale-99"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-slate-900/90 border border-amber-400/50 flex items-center justify-center text-2xl shrink-0">
+              <span className="inline-block animate-spin-slow">🎡</span>
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <h4 className="font-black text-sm text-amber-200">
+                  Fox Lucky Wheel • گردونه شانس
+                </h4>
+                {canSpinWheel && (
+                  <span className="px-1.5 py-0.5 rounded bg-emerald-500 text-slate-950 font-black text-[9px] uppercase">
+                    FREE
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-300 mt-0.5">
+                Spin once every 24h to win up to 100,000 FOX or 3x Turbo!
+              </p>
+            </div>
+          </div>
+          <button className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 font-black text-xs shrink-0 shadow">
+            {canSpinWheel ? 'Spin Now' : 'View'}
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="grid grid-cols-4 gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800 mb-4 text-[11px] font-bold">

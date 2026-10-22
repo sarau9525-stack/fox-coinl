@@ -2,7 +2,7 @@ export interface UpgradeDefinition {
   id: string;
   name: string;
   description: string;
-  category: 'tap' | 'passive' | 'special';
+  category: 'tap' | 'passive' | 'special' | 'gift';
   basePrice: number;
   priceMultiplier: number;
   baseBenefit: number;
@@ -32,6 +32,19 @@ export interface DailyRewardDay {
   day: number;
   coins: number;
   specialBadge?: string;
+}
+
+export interface LuckyWheelPrize {
+  id: string;
+  label: string;
+  shortLabel: string;
+  persianLabel: string;
+  type: 'coins' | 'full_energy' | 'turbo';
+  amount: number; // FOX coins, or seconds for turbo, or +refills for full_energy
+  weight: number;
+  color: string;
+  accentColor: string;
+  rarity: 'common' | 'rare' | 'epic' | 'jackpot';
 }
 
 export interface UserGameState {
@@ -85,6 +98,7 @@ export interface UserGameState {
     nextFullEnergyAt: number;
     turboActiveUntil: number;
     nextTurboAt: number;
+    lastWheelSpinTimestamp?: number;
   };
 
   createdAt: number;

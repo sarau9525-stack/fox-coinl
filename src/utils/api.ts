@@ -1,5 +1,5 @@
-import { UserGameState, LeaderboardEntry, UpgradeDefinition, TaskDefinition, DailyRewardDay, TradeOrder } from '../types/game.js';
-import { UPGRADES, PLAYER_LEVELS, TASKS, DAILY_REWARDS, GAME_CONSTANTS } from '../../server/gameConfig.js';
+import { UserGameState, LeaderboardEntry, UpgradeDefinition, TaskDefinition, DailyRewardDay, TradeOrder, LuckyWheelPrize } from '../types/game.js';
+import { UPGRADES, PLAYER_LEVELS, TASKS, DAILY_REWARDS, GAME_CONSTANTS, LUCKY_WHEEL_PRIZES, pickLuckyWheelPrize, reconcileUserLevel, getUpgradeXpBonus } from '../../server/gameConfig.js';
 
 function calculateUpgradePrice(upg: UpgradeDefinition, currentLevel: number): number {
   return Math.floor(upg.basePrice * Math.pow(upg.priceMultiplier, currentLevel));
@@ -22,9 +22,12 @@ const TOKEN_KEY = 'foxcoin_auth_token';
 const LOCAL_USER_KEY = 'foxcoin_local_user_v1';
 const LOCAL_TRADES_KEY = 'foxcoin_local_trades_v1';
 const LOCAL_BOT_KEY = 'foxcoin_local_bot_v1';
+const LOCAL_UPGRADES_KEY = 'foxcoin_local_upgrades_v2';
+const LOCAL_WHEEL_KEY = 'foxcoin_local_wheel_v2';
 
 export interface GameConfig {
   upgrades: UpgradeDefinition[];
+  wheelPrizes?: LuckyWheelPrize[];
   levels: Array<{ level: number; name: string; minCoins: number; badge: string }>;
   tasks: TaskDefinition[];
   dailyRewards: DailyRewardDay[];
@@ -77,6 +80,14 @@ class ApiService {
     this.onStateUpdated = cb;
   }
 
+  public hasPendingTaps(): boolean {
+    return this.pendingTapCount > 0 || this.isFlushingTaps;
+  }
+
+  public syncClientState(user: UserGameState) {
+    this.saveLocalUser(user);
+  }
+
   private getLocalUser(defaultUsername = 'FoxPlayer', isTelegram = false, refCode?: string): UserGameState {
     if (typeof window !== 'undefined') {
       const raw = localStorage.getItem(LOCAL_USER_KEY);
@@ -106,7 +117,7 @@ class ApiService {
       displayName: defaultUsername,
       isGuest: !isTelegram,
       isTelegram,
-      isAdmin: true,
+      isAdmin: false,
       balance: startBalance,
       totalEarned: startBalance,
       totalTaps: 0,
@@ -159,12 +170,7 @@ class ApiService {
       user.unclaimedPassive = Math.floor(elapsedHours * user.profitPerHour);
     }
 
-    const lvl = getPlayerLevel(user.balance);
-    const nextLvl = getNextPlayerLevel(lvl.level);
-    user.level = lvl.level;
-    user.levelName = lvl.name;
-    user.currentLevelMinCoins = lvl.minCoins;
-    user.nextLevelMinCoins = nextLvl ? nextLvl.minCoins : lvl.minCoins;
+    reconcileUserLevel(user, this.getLocalUpgrades());
 
     return user;
   }
@@ -203,6 +209,16 @@ class ApiService {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
+    // Attach lightweight state snapshot header so Cloudflare Edge isolates can seamlessly rehydrate after cold-starts
+    if (typeof window !== 'undefined') {
+      try {
+        const rawUser = localStorage.getItem(LOCAL_USER_KEY);
+        if (rawUser) {
+          headers['x-fox-sync'] = btoa(encodeURIComponent(rawUser));
+        }
+      } catch {}
+    }
+
     const response = await fetch(endpoint, {
       ...options,
       headers,
@@ -228,8 +244,44 @@ class ApiService {
       msg.startsWith('ENDPOINT_NOT_JSON') ||
       msg.includes('Failed to fetch') ||
       msg.includes('NetworkError') ||
-      msg.includes('404')
+      msg.includes('404') ||
+      msg.includes('Unauthorized')
     );
+  }
+
+  private getLocalUpgrades(): UpgradeDefinition[] {
+    if (typeof window !== 'undefined') {
+      const raw = localStorage.getItem(LOCAL_UPGRADES_KEY);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as UpgradeDefinition[];
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // Merge any newly added default UPGRADES not yet in parsed
+            const map = new Map(parsed.map((u) => [u.id, u]));
+            for (const def of UPGRADES) {
+              if (!map.has(def.id)) {
+                parsed.push(def);
+              }
+            }
+            return parsed;
+          }
+        } catch {}
+      }
+    }
+    return [...UPGRADES];
+  }
+
+  private getLocalWheelPrizes(): LuckyWheelPrize[] {
+    if (typeof window !== 'undefined') {
+      const raw = localStorage.getItem(LOCAL_WHEEL_KEY);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as LuckyWheelPrize[];
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        } catch {}
+      }
+    }
+    return [...LUCKY_WHEEL_PRIZES];
   }
 
   public async getConfig(): Promise<GameConfig> {
@@ -245,7 +297,8 @@ class ApiService {
           } catch {}
         }
         return {
-          upgrades: UPGRADES,
+          upgrades: this.getLocalUpgrades(),
+          wheelPrizes: this.getLocalWheelPrizes(),
           levels: PLAYER_LEVELS,
           tasks: TASKS,
           dailyRewards: DAILY_REWARDS,
@@ -317,6 +370,7 @@ class ApiService {
         const user = this.getLocalUser(username || email.split('@')[0], false, refCode);
         user.email = email;
         user.isGuest = false;
+        user.isAdmin = email.toLowerCase().trim() === 'k39127031@gmail.com';
         this.saveLocalUser(user);
         const token = `local_token_${user.id}`;
         this.setToken(token);
@@ -340,6 +394,7 @@ class ApiService {
         const user = this.getLocalUser(email.split('@')[0], false);
         user.email = email;
         user.isGuest = false;
+        user.isAdmin = email.toLowerCase().trim() === 'k39127031@gmail.com';
         this.saveLocalUser(user);
         const token = `local_token_${user.id}`;
         this.setToken(token);
@@ -410,27 +465,19 @@ class ApiService {
       });
 
       this.saveLocalUser(res.user);
-      if (this.onStateUpdated && res.user) {
+      // Only push server state to UI if no newer taps occurred while the request was in flight
+      if (this.onStateUpdated && res.user && this.pendingTapCount === 0) {
         this.onStateUpdated(res.user);
       }
       return res.user;
     } catch (err) {
       if (this.isStaticFallbackError(err)) {
         const user = this.getLocalUser();
-        const isTurbo = user.boosters.turboActiveUntil > Date.now();
-        const multiplier = isTurbo ? GAME_CONSTANTS.TURBO_MULTIPLIER : 1;
-        const effectiveTaps = isTurbo ? countToSend : Math.min(countToSend, Math.floor(user.energy));
-        const earned = effectiveTaps * user.tapPower * multiplier;
-
-        if (!isTurbo) {
-          user.energy = Math.max(0, user.energy - effectiveTaps);
-        }
-        user.balance += earned;
-        user.totalEarned += earned;
-        user.totalTaps += effectiveTaps;
         this.syncLocalUserProgress(user);
         this.saveLocalUser(user);
-        if (this.onStateUpdated) this.onStateUpdated(user);
+        if (this.onStateUpdated && this.pendingTapCount === 0) {
+          this.onStateUpdated(user);
+        }
         return user;
       }
       return null;
@@ -453,24 +500,29 @@ class ApiService {
         body: JSON.stringify({ upgradeId }),
       });
 
-      this.saveLocalUser(res.user);
-      if (this.onStateUpdated && res.user) {
-        this.onStateUpdated(res.user);
+      const reconciled = reconcileUserLevel(res.user, this.getLocalUpgrades());
+      this.saveLocalUser(reconciled);
+      if (this.onStateUpdated && reconciled) {
+        this.onStateUpdated(reconciled);
       }
-      return res.user;
+      return reconciled;
     } catch (err) {
       if (this.isStaticFallbackError(err)) {
         const user = this.getLocalUser();
-        const upg = UPGRADES.find((u) => u.id === upgradeId);
+        const upg = this.getLocalUpgrades().find((u) => u.id === upgradeId);
         if (!upg) throw new Error('Upgrade not found');
         const currentLvl = user.upgrades[upgradeId] || 0;
         const price = calculateUpgradePrice(upg, currentLvl);
         if (user.balance < price) throw new Error('Insufficient FOX balance');
 
         user.balance -= price;
+        user.totalEarned = Math.max(user.totalEarned || 0, user.balance + price) + getUpgradeXpBonus(price);
         user.upgrades[upgradeId] = currentLvl + 1;
         if (upg.benefitType === 'tap_power') user.tapPower += upg.baseBenefit;
-        if (upg.benefitType === 'max_energy') user.maxEnergy += upg.baseBenefit;
+        if (upg.benefitType === 'max_energy') {
+          user.maxEnergy += upg.baseBenefit;
+          user.energy += upg.baseBenefit;
+        }
         if (upg.benefitType === 'energy_regen') user.energyRegenRate += upg.baseBenefit;
         if (upg.benefitType === 'profit_per_hour') user.profitPerHour += upg.baseBenefit;
 
@@ -603,6 +655,47 @@ class ApiService {
         this.saveLocalUser(user);
         if (this.onStateUpdated) this.onStateUpdated(user);
         return user;
+      }
+      throw err;
+    }
+  }
+
+  public async spinLuckyWheel(): Promise<{ user: UserGameState; prize: LuckyWheelPrize; prizeIndex: number }> {
+    try {
+      const res = await this.request<{ user: UserGameState; prize: LuckyWheelPrize; prizeIndex: number }>(
+        '/api/game/spin-wheel',
+        { method: 'POST' }
+      );
+      this.saveLocalUser(res.user);
+      if (this.onStateUpdated && res.user) {
+        this.onStateUpdated(res.user);
+      }
+      return res;
+    } catch (err) {
+      if (this.isStaticFallbackError(err)) {
+        const user = this.getLocalUser();
+        const now = Date.now();
+        const lastSpin = user.boosters.lastWheelSpinTimestamp || 0;
+        if (now - lastSpin < GAME_CONSTANTS.WHEEL_COOLDOWN_MS) {
+          throw new Error('Lucky Wheel is on 24h cooldown');
+        }
+        const { prize, index: prizeIndex } = pickLuckyWheelPrize(this.getLocalWheelPrizes());
+        user.boosters.lastWheelSpinTimestamp = now;
+
+        if (prize.type === 'coins') {
+          user.balance += prize.amount;
+          user.totalEarned += prize.amount;
+        } else if (prize.type === 'full_energy') {
+          user.energy = user.maxEnergy;
+          user.boosters.fullEnergyRemaining += prize.amount;
+        } else if (prize.type === 'turbo') {
+          const baseUntil = Math.max(now, user.boosters.turboActiveUntil || 0);
+          user.boosters.turboActiveUntil = baseUntil + prize.amount * 1000;
+        }
+        this.syncLocalUserProgress(user);
+        this.saveLocalUser(user);
+        if (this.onStateUpdated) this.onStateUpdated(user);
+        return { user, prize, prizeIndex };
       }
       throw err;
     }
@@ -773,6 +866,9 @@ class ApiService {
       return await this.request<{ isAdmin: boolean }>('/api/admin/auth/verify', { headers });
     } catch (err) {
       if (this.isStaticFallbackError(err)) {
+        if (adminSecret !== '123456') {
+          throw new Error('Invalid Administrator Secret Key');
+        }
         return { isAdmin: true };
       }
       throw err;
@@ -969,6 +1065,212 @@ class ApiService {
     const secret = adminSecret || '123456';
     return `/api/admin/project/download-zip?secret=${encodeURIComponent(secret)}`;
   }
+
+  public async getAdminUsers(adminSecret?: string): Promise<{ users: UserGameState[] }> {
+    try {
+      const headers: Record<string, string> = {};
+      if (adminSecret) headers['x-admin-secret'] = adminSecret;
+      return await this.request<{ users: UserGameState[] }>('/api/admin/users', { headers });
+    } catch (err) {
+      if (this.isStaticFallbackError(err)) {
+        const currentUser = this.getLocalUser();
+        const extraRaw = typeof window !== 'undefined' ? localStorage.getItem('foxcoin_local_all_users_v1') : null;
+        let list: UserGameState[] = [];
+        if (extraRaw) {
+          try {
+            list = JSON.parse(extraRaw);
+          } catch {}
+        }
+        const existingIdx = list.findIndex((u) => u.id === currentUser.id);
+        if (existingIdx >= 0) {
+          list[existingIdx] = currentUser;
+        } else {
+          list.unshift(currentUser);
+        }
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('foxcoin_local_all_users_v1', JSON.stringify(list));
+        }
+        return { users: list };
+      }
+      throw err;
+    }
+  }
+
+  public async adjustAdminUserBalance(
+    params: {
+      userId: string;
+      amount: number;
+      operation: 'add' | 'deduct' | 'set';
+      balanceType?: 'main' | 'referral';
+    },
+    adminSecret?: string
+  ): Promise<{ success: boolean; user: UserGameState; users: UserGameState[] }> {
+    try {
+      const headers: Record<string, string> = {};
+      if (adminSecret) headers['x-admin-secret'] = adminSecret;
+      const res = await this.request<{ success: boolean; user: UserGameState; users: UserGameState[] }>(
+        '/api/admin/users/adjust-balance',
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(params),
+        }
+      );
+
+      if (this.onStateUpdated && res.user) {
+        const currentLocal = this.getLocalUser();
+        if (res.user.id === currentLocal.id) {
+          this.saveLocalUser(res.user);
+          this.onStateUpdated(res.user);
+        }
+      }
+      return res;
+    } catch (err) {
+      if (this.isStaticFallbackError(err)) {
+        const { users } = await this.getAdminUsers(adminSecret);
+        const target = users.find((u) => u.id === params.userId);
+        if (!target) throw new Error('User not found');
+
+        const cleanAmount = Math.max(0, Math.floor(Number(params.amount) || 0));
+        if (params.balanceType === 'referral') {
+          if (params.operation === 'add') {
+            target.referralEarnings = Math.max(0, (target.referralEarnings || 0) + cleanAmount);
+            target.balance = Math.max(0, target.balance + cleanAmount);
+            target.totalEarned += cleanAmount;
+          } else if (params.operation === 'deduct') {
+            target.referralEarnings = Math.max(0, (target.referralEarnings || 0) - cleanAmount);
+            target.balance = Math.max(0, target.balance - cleanAmount);
+          } else if (params.operation === 'set') {
+            target.referralEarnings = cleanAmount;
+          }
+        } else {
+          if (params.operation === 'add') {
+            target.balance = Math.max(0, target.balance + cleanAmount);
+            target.totalEarned += cleanAmount;
+          } else if (params.operation === 'deduct') {
+            target.balance = Math.max(0, target.balance - cleanAmount);
+          } else if (params.operation === 'set') {
+            target.balance = cleanAmount;
+            if (cleanAmount > target.totalEarned) target.totalEarned = cleanAmount;
+          }
+        }
+
+        this.syncLocalUserProgress(target);
+
+        const currentLocal = this.getLocalUser();
+        if (target.id === currentLocal.id) {
+          this.saveLocalUser(target);
+          if (this.onStateUpdated) this.onStateUpdated(target);
+        }
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('foxcoin_local_all_users_v1', JSON.stringify(users));
+        }
+
+        return { success: true, user: target, users };
+      }
+      throw err;
+    }
+  }
+
+  public async adminSaveCard(
+    card: UpgradeDefinition,
+    adminSecret?: string
+  ): Promise<{ success: boolean; upgrades: UpgradeDefinition[] }> {
+    try {
+      const headers: Record<string, string> = {};
+      if (adminSecret) headers['x-admin-secret'] = adminSecret;
+      const res = await this.request<{ success: boolean; upgrades: UpgradeDefinition[] }>(
+        '/api/admin/cards/save',
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ card }),
+        }
+      );
+      if (typeof window !== 'undefined' && res.upgrades) {
+        localStorage.setItem(LOCAL_UPGRADES_KEY, JSON.stringify(res.upgrades));
+      }
+      return res;
+    } catch (err) {
+      if (this.isStaticFallbackError(err)) {
+        const list = this.getLocalUpgrades();
+        const idx = list.findIndex((u) => u.id === card.id);
+        if (idx >= 0) {
+          list[idx] = card;
+        } else {
+          list.push(card);
+        }
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(LOCAL_UPGRADES_KEY, JSON.stringify(list));
+        }
+        return { success: true, upgrades: list };
+      }
+      throw err;
+    }
+  }
+
+  public async adminDeleteCard(
+    upgradeId: string,
+    adminSecret?: string
+  ): Promise<{ success: boolean; upgrades: UpgradeDefinition[] }> {
+    try {
+      const headers: Record<string, string> = {};
+      if (adminSecret) headers['x-admin-secret'] = adminSecret;
+      const res = await this.request<{ success: boolean; upgrades: UpgradeDefinition[] }>(
+        '/api/admin/cards/delete',
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ upgradeId }),
+        }
+      );
+      if (typeof window !== 'undefined' && res.upgrades) {
+        localStorage.setItem(LOCAL_UPGRADES_KEY, JSON.stringify(res.upgrades));
+      }
+      return res;
+    } catch (err) {
+      if (this.isStaticFallbackError(err)) {
+        const list = this.getLocalUpgrades().filter((u) => u.id !== upgradeId);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(LOCAL_UPGRADES_KEY, JSON.stringify(list));
+        }
+        return { success: true, upgrades: list };
+      }
+      throw err;
+    }
+  }
+
+  public async adminSaveWheelPrizes(
+    prizes: LuckyWheelPrize[],
+    adminSecret?: string
+  ): Promise<{ success: boolean; wheelPrizes: LuckyWheelPrize[] }> {
+    try {
+      const headers: Record<string, string> = {};
+      if (adminSecret) headers['x-admin-secret'] = adminSecret;
+      const res = await this.request<{ success: boolean; wheelPrizes: LuckyWheelPrize[] }>(
+        '/api/admin/wheel/save',
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ prizes }),
+        }
+      );
+      if (typeof window !== 'undefined' && res.wheelPrizes) {
+        localStorage.setItem(LOCAL_WHEEL_KEY, JSON.stringify(res.wheelPrizes));
+      }
+      return res;
+    } catch (err) {
+      if (this.isStaticFallbackError(err)) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(LOCAL_WHEEL_KEY, JSON.stringify(prizes));
+        }
+        return { success: true, wheelPrizes: prizes };
+      }
+      throw err;
+    }
+  }
 }
 
 export const api = new ApiService();
+

@@ -311,8 +311,9 @@ export async function processTelegramWebhookUpdate(
 
   const gameUrl = appUrl.startsWith('http') ? appUrl : `https://${appUrl}`;
 
-  const channelHandle = process.env.TELEGRAM_CHANNEL || '@FoxCoinOfficial';
-  const channelUrl = `https://t.me/${channelHandle.replace('@', '')}`;
+  const channelHandle = process.env.TELEGRAM_CHANNEL || '@FOX_COINEX';
+  const channelUrl = 'https://t.me/FOX_COINEX';
+  const youtubeUrl = 'https://www.youtube.com/@FOX-COINl';
 
   if (command === '/start') {
     // Check if referral code was passed: /start ref_FOX_XXXX
@@ -326,21 +327,27 @@ export async function processTelegramWebhookUpdate(
       `🦊 <b>Welcome to FOXCOIN, ${from?.first_name || 'Fox Miner'}!</b>\n\n` +
       `Tap to mine FOX, invite friends for <b>10,000 FOX ($10 USD) per 10 friends</b>, and trade your referral rewards on our crypto exchange with 10-day payout!\n` +
       refGreeting +
-      `\n\n📢 <b>Mandatory Requirement:</b>\n` +
-      `You must join our official channel <b>${channelHandle}</b> to activate mining and unlock trading withdrawals.\n\n` +
-      `👇 <b>Step 1: Join Channel, Step 2: Launch App:</b>`;
+      `\n\n📢 <b>Mandatory Membership Requirement:</b>\n` +
+      `You must join both official channels (<b>${channelHandle}</b> on Telegram & <b>@FOX-COINl</b> on YouTube) to activate mining and unlock trading withdrawals.\n\n` +
+      `👇 <b>Join Both Channels & Launch App:</b>`;
 
     const keyboard = {
       inline_keyboard: [
         [
           {
-            text: '📢 1. Join Official Channel',
+            text: '📢 1. Join Telegram (@FOX_COINEX)',
             url: channelUrl,
           },
         ],
         [
           {
-            text: '🚀 2. Launch FOXCOIN Mini App 🦊',
+            text: '▶️ 2. Subscribe YouTube (@FOX-COINl)',
+            url: youtubeUrl,
+          },
+        ],
+        [
+          {
+            text: '🚀 3. Launch FOXCOIN Mini App 🦊',
             web_app: { url: gameUrl },
           },
         ],
@@ -359,13 +366,17 @@ export async function processTelegramWebhookUpdate(
   } else if (command === '/play') {
     const text =
       `🦊 <b>Ready to play FOXCOIN?</b>\n\n` +
-      `Make sure you are a member of ${channelHandle} before launching:`;
+      `Make sure you have joined ${channelHandle} on Telegram and subscribed to @FOX-COINl on YouTube before launching:`;
     const keyboard = {
       inline_keyboard: [
         [
           {
-            text: '📢 Join Official Channel',
+            text: '📢 Join Telegram (@FOX_COINEX)',
             url: channelUrl,
+          },
+          {
+            text: '▶️ Subscribe YouTube',
+            url: youtubeUrl,
           },
         ],
         [

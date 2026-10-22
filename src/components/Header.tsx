@@ -1,27 +1,34 @@
-import { Volume2, VolumeX, Settings, Zap, ShieldCheck, Github } from 'lucide-react';
+import { Volume2, VolumeX, Settings, Zap, ShieldCheck } from 'lucide-react';
 import { UserGameState } from '../types/game.js';
-import { sound } from '../utils/audio.js';
 import { foxGoldCoinImg } from '../assets/assets.js';
 
 interface HeaderProps {
   user: UserGameState;
+  isAdmin?: boolean;
   onOpenSettings: () => void;
   onOpenBoost: () => void;
   onOpenDaily: () => void;
+  onOpenWheel?: () => void;
   isMuted: boolean;
   onToggleSound: () => void;
-  onOpenAdminSetup?: (tab?: 'webhook' | 'github') => void;
+  onOpenAdminSetup?: (tab?: 'users' | 'webhook' | 'github') => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   user,
+  isAdmin = false,
   onOpenSettings,
   onOpenBoost,
   onOpenDaily,
+  onOpenWheel,
   isMuted,
   onToggleSound,
   onOpenAdminSetup,
 }) => {
+  const showAdminControls = Boolean(user.isAdmin || isAdmin);
+  const canSpinWheel =
+    Date.now() - (user.boosters.lastWheelSpinTimestamp || 0) >= 24 * 60 * 60 * 1000;
+
   return (
     <header className="w-full max-w-md mx-auto pt-3 px-4 pb-2 flex items-center justify-between text-white z-20">
       {/* Player profile chip */}
@@ -51,7 +58,7 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="font-bold text-sm tracking-tight text-slate-100 max-w-[120px] truncate">
               {user.displayName || user.username}
             </span>
-            {user.isAdmin ? (
+            {showAdminControls ? (
               <span className="px-1.5 py-0.5 text-[9px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/40 rounded">
                 ADMIN
               </span>
@@ -71,32 +78,40 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Action buttons */}
       <div className="flex items-center gap-1.5">
-        {/* Automatic Upload to GitHub (Cloudflare Ready) */}
-        {onOpenAdminSetup && (
+        {/* Dedicated Admin Dashboard Button — Visible ONLY to Admin */}
+        {showAdminControls && onOpenAdminSetup && (
           <button
-            onClick={() => onOpenAdminSetup('github')}
-            className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700/90 border border-slate-700/70 text-slate-200 hover:text-white transition active:scale-95 shadow-sm flex items-center justify-center hover:border-amber-400/50"
-            title="Automatic Upload to GitHub (Cloudflare Pages Ready)"
+            onClick={() => onOpenAdminSetup('users')}
+            className="px-2.5 py-2 rounded-xl bg-gradient-to-r from-purple-900/80 to-indigo-900/80 hover:from-purple-800 hover:to-indigo-800 border border-purple-500/50 text-purple-200 transition active:scale-95 shadow-sm flex items-center gap-1.5 cursor-pointer"
+            title="Open Admin Management Page"
           >
-            <Github className="w-4 h-4 text-slate-200" />
+            <ShieldCheck className="w-4 h-4 text-amber-400" />
+            <span className="text-[11px] font-black tracking-tight">Admin</span>
           </button>
         )}
 
-        {/* Telegram Bot Setup if admin */}
-        {user.isAdmin && onOpenAdminSetup && (
+        {/* Lucky Wheel 24h Spin Trigger */}
+        {onOpenWheel && (
           <button
-            onClick={() => onOpenAdminSetup('webhook')}
-            className="p-2 rounded-xl bg-purple-950/60 hover:bg-purple-900/60 border border-purple-500/40 text-purple-300 transition active:scale-95 shadow-sm"
-            title="Telegram Bot Setup (Admin)"
+            onClick={onOpenWheel}
+            className={`relative p-2 rounded-xl transition active:scale-95 border cursor-pointer ${
+              canSpinWheel
+                ? 'bg-gradient-to-r from-amber-500/25 to-emerald-500/20 border-amber-400/70 text-amber-300 shadow-md shadow-amber-500/20'
+                : 'bg-slate-800/60 border-slate-700/60 text-slate-400'
+            }`}
+            title="Lucky Wheel (گردونه شانس)"
           >
-            <ShieldCheck className="w-4 h-4 text-purple-300" />
+            <span className="text-sm inline-block animate-spin-slow">🎡</span>
+            {canSpinWheel && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-400 rounded-full border-2 border-[#0B0E17]" />
+            )}
           </button>
         )}
 
         {/* Daily Reward indicator */}
         <button
           onClick={onOpenDaily}
-          className={`relative p-2 rounded-xl transition active:scale-95 border ${
+          className={`relative p-2 rounded-xl transition active:scale-95 border cursor-pointer ${
             user.canClaimDaily
               ? 'bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-amber-500/60 text-amber-300 shadow-md shadow-amber-500/20 animate-pulse'
               : 'bg-slate-800/60 border-slate-700/60 text-slate-400'
@@ -112,7 +127,7 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Boost modal trigger */}
         <button
           onClick={onOpenBoost}
-          className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-amber-400 transition active:scale-95 flex items-center gap-1"
+          className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 text-amber-400 transition active:scale-95 flex items-center gap-1 cursor-pointer"
           title="Boosters"
         >
           <Zap className="w-4 h-4 fill-amber-400" />

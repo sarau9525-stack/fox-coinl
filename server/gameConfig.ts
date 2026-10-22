@@ -1,4 +1,4 @@
-import { UpgradeDefinition, PlayerLevel, TaskDefinition, DailyRewardDay } from '../src/types/game.js';
+import { UpgradeDefinition, PlayerLevel, TaskDefinition, DailyRewardDay, LuckyWheelPrize } from '../src/types/game.js';
 
 export const PLAYER_LEVELS: PlayerLevel[] = [
   { level: 1, name: 'Bronze Fox', minCoins: 0, badge: '🥉' },
@@ -63,8 +63,56 @@ export const UPGRADES: UpgradeDefinition[] = [
     icon: 'Sparkles',
     levelRequirement: 3,
   },
+  {
+    id: 'plasma_paws',
+    name: 'Plasma Strike Paws',
+    description: 'Superheated plasma gauntlets adding +15 FOX per tap',
+    category: 'tap',
+    basePrice: 85_000,
+    priceMultiplier: 1.55,
+    baseBenefit: 15,
+    benefitType: 'tap_power',
+    icon: '⚡',
+    levelRequirement: 4,
+  },
+  {
+    id: 'quantum_reactor_battery',
+    name: 'Quantum Stamina Core',
+    description: 'Increases maximum energy capacity by +2,500',
+    category: 'tap',
+    basePrice: 150_000,
+    priceMultiplier: 1.55,
+    baseBenefit: 2_500,
+    benefitType: 'max_energy',
+    icon: '🔋',
+    levelRequirement: 5,
+  },
+  {
+    id: 'hyper_reflex_nerves',
+    name: 'Hyper-Reflex Neural Link',
+    description: 'Boosts energy recovery speed by +4/sec',
+    category: 'tap',
+    basePrice: 400_000,
+    priceMultiplier: 1.6,
+    baseBenefit: 4,
+    benefitType: 'energy_regen',
+    icon: '🧬',
+    levelRequirement: 6,
+  },
+  {
+    id: 'celestial_gauntlet',
+    name: 'Celestial God Claws',
+    description: 'Mythic astral claws granting +50 FOX per tap',
+    category: 'tap',
+    basePrice: 1_500_000,
+    priceMultiplier: 1.6,
+    baseBenefit: 50,
+    benefitType: 'tap_power',
+    icon: '☄️',
+    levelRequirement: 7,
+  },
 
-  // Passive income upgrades
+  // Passive income upgrades (Level 1 to Level 10 High-Profit Cards)
   {
     id: 'berry_stand',
     name: 'Forest Berry Stand',
@@ -90,6 +138,18 @@ export const UPGRADES: UpgradeDefinition[] = [
     levelRequirement: 1,
   },
   {
+    id: 'fox_arcade_club',
+    name: 'Neon Fox Arcade Club',
+    description: 'Retro-futuristic gaming lounge earning steady coin flow',
+    category: 'passive',
+    basePrice: 2_200,
+    priceMultiplier: 1.36,
+    baseBenefit: 1_150, // +1,150/hr
+    benefitType: 'profit_per_hour',
+    icon: '🎮',
+    levelRequirement: 1,
+  },
+  {
     id: 'crypto_burrow',
     name: 'Crypto Burrow Mining',
     description: 'Underground micro-ASIC burrow mining FOX coins',
@@ -99,6 +159,18 @@ export const UPGRADES: UpgradeDefinition[] = [
     baseBenefit: 2_200, // +2,200/hr
     benefitType: 'profit_per_hour',
     icon: 'Cpu',
+    levelRequirement: 2,
+  },
+  {
+    id: 'nft_art_studio',
+    name: 'Fox NFT Art Studio',
+    description: 'Digital collectibles gallery minting rare fox portraits',
+    category: 'passive',
+    basePrice: 12_000,
+    priceMultiplier: 1.38,
+    baseBenefit: 5_600, // +5,600/hr
+    benefitType: 'profit_per_hour',
+    icon: '🎨',
     levelRequirement: 2,
   },
   {
@@ -114,6 +186,18 @@ export const UPGRADES: UpgradeDefinition[] = [
     levelRequirement: 3,
   },
   {
+    id: 'defi_liquidity_pool',
+    name: 'DeFi Liquidity Pool',
+    description: 'Automated market maker yielding high-frequency swap fees',
+    category: 'passive',
+    basePrice: 60_000,
+    priceMultiplier: 1.4,
+    baseBenefit: 25_000, // +25,000/hr
+    benefitType: 'profit_per_hour',
+    icon: '💧',
+    levelRequirement: 3,
+  },
+  {
     id: 'space_mission',
     name: 'Fox Lunar Expedition',
     description: 'Orbital satellite station transmitting FOX signals',
@@ -123,6 +207,18 @@ export const UPGRADES: UpgradeDefinition[] = [
     baseBenefit: 48_000, // +48,000/hr
     benefitType: 'profit_per_hour',
     icon: 'Rocket',
+    levelRequirement: 4,
+  },
+  {
+    id: 'ai_trading_bot_farm',
+    name: 'AI Neural Trading Desk',
+    description: 'Deep-learning arbitrage algorithms trading FOX 24/7',
+    category: 'passive',
+    basePrice: 280_000,
+    priceMultiplier: 1.43,
+    baseBenefit: 105_000, // +105,000/hr
+    benefitType: 'profit_per_hour',
+    icon: '🤖',
     levelRequirement: 4,
   },
   {
@@ -137,8 +233,128 @@ export const UPGRADES: UpgradeDefinition[] = [
     icon: 'ShieldCheck',
     levelRequirement: 5,
   },
+  {
+    id: 'quantum_supercomputer',
+    name: 'Quantum Supercomputer Hub',
+    description: 'Sub-zero photonic processors solving blocks at lightspeed',
+    category: 'passive',
+    basePrice: 1_400_000,
+    priceMultiplier: 1.45,
+    baseBenefit: 460_000, // +460,000/hr
+    benefitType: 'profit_per_hour',
+    icon: '💻',
+    levelRequirement: 5,
+  },
+  {
+    id: 'geothermal_mining_city',
+    name: 'Volcanic Geothermal Mine',
+    description: 'Magma-powered mega mining facility in a volcanic crater',
+    category: 'passive',
+    basePrice: 3_200_000,
+    priceMultiplier: 1.46,
+    baseBenefit: 980_000, // +980,000/hr
+    benefitType: 'profit_per_hour',
+    icon: '🌋',
+    levelRequirement: 6,
+  },
+  {
+    id: 'fox_wall_street_tower',
+    name: 'Fox Wall Street Skyscraper',
+    description: '100-story financial headquarters dominating global markets',
+    category: 'passive',
+    basePrice: 7_500_000,
+    priceMultiplier: 1.47,
+    baseBenefit: 2_150_000, // +2.15M/hr
+    benefitType: 'profit_per_hour',
+    icon: '🏙️',
+    levelRequirement: 6,
+  },
+  {
+    id: 'antarctic_data_bunker',
+    name: 'Antarctic Cryo Data Bunker',
+    description: 'Naturally cooled continental server fortress under the ice',
+    category: 'passive',
+    basePrice: 16_000_000,
+    priceMultiplier: 1.48,
+    baseBenefit: 4_400_000, // +4.4M/hr
+    benefitType: 'profit_per_hour',
+    icon: '🧊',
+    levelRequirement: 7,
+  },
+  {
+    id: 'mars_terraforming_colony',
+    name: 'Mars Fox Colony Alpha',
+    description: 'Interplanetary red-planet mining domes & starports',
+    category: 'passive',
+    basePrice: 38_000_000,
+    priceMultiplier: 1.49,
+    baseBenefit: 9_800_000, // +9.8M/hr
+    benefitType: 'profit_per_hour',
+    icon: '🪐',
+    levelRequirement: 7,
+  },
+  {
+    id: 'asteroid_platinum_rig',
+    name: 'Asteroid Belt Platinum Rig',
+    description: 'Autonomous spacecraft harvesting solid platinum asteroids',
+    category: 'passive',
+    basePrice: 85_000_000,
+    priceMultiplier: 1.5,
+    baseBenefit: 21_000_000, // +21M/hr
+    benefitType: 'profit_per_hour',
+    icon: '☄️',
+    levelRequirement: 8,
+  },
+  {
+    id: 'dyson_swarm_collector',
+    name: 'Solar Dyson Swarm Array',
+    description: 'Stellar megastructure capturing 100% of solar star output',
+    category: 'passive',
+    basePrice: 210_000_000,
+    priceMultiplier: 1.52,
+    baseBenefit: 48_000_000, // +48M/hr
+    benefitType: 'profit_per_hour',
+    icon: '☀️',
+    levelRequirement: 9,
+  },
+  {
+    id: 'multiverse_nexus_engine',
+    name: 'Multiverse Fox Singularity',
+    description: 'Harvests infinite FOX liquidity across parallel dimensions',
+    category: 'passive',
+    basePrice: 550_000_000,
+    priceMultiplier: 1.55,
+    baseBenefit: 120_000_000, // +120M/hr
+    benefitType: 'profit_per_hour',
+    icon: '🌌',
+    levelRequirement: 10,
+  },
 
-  // Special / Clan upgrades
+  // Special / Clan & High-Roller VIP upgrades
+  {
+    id: 'vip_launchpad_pass',
+    name: 'VIP Token Launchpad',
+    description: 'Early-access allocation in premier Web3 token launches',
+    category: 'special',
+    basePrice: 45_000,
+    priceMultiplier: 1.42,
+    baseBenefit: 19_500,
+    benefitType: 'profit_per_hour',
+    icon: '🎟️',
+    levelRequirement: 2,
+  },
+  {
+    id: 'ton_validator_node',
+    name: 'TON Master Validator Node',
+    description: 'Official institutional validator staking pool on TON',
+    category: 'special',
+    basePrice: 350_000,
+    priceMultiplier: 1.45,
+    baseBenefit: 135_000,
+    benefitType: 'profit_per_hour',
+    icon: '💎',
+    levelRequirement: 4,
+  },
   {
     id: 'clan_embassy',
     name: 'Fox Clan Embassy',
@@ -150,6 +366,224 @@ export const UPGRADES: UpgradeDefinition[] = [
     benefitType: 'profit_per_hour',
     icon: 'Crown',
     levelRequirement: 5,
+  },
+  {
+    id: 'global_exchange_license',
+    name: 'Tier-1 Exchange Listing',
+    description: 'Global exchange market-making license generating massive volume',
+    category: 'special',
+    basePrice: 12_000_000,
+    priceMultiplier: 1.5,
+    baseBenefit: 3_500_000,
+    benefitType: 'profit_per_hour',
+    icon: '🏦',
+    levelRequirement: 6,
+  },
+  {
+    id: 'sovereign_fox_central_bank',
+    name: 'Sovereign Fox Central Bank',
+    description: 'Global reserve treasury printing institutional FOX bonds',
+    category: 'special',
+    basePrice: 50_000_000,
+    priceMultiplier: 1.52,
+    baseBenefit: 14_000_000,
+    benefitType: 'profit_per_hour',
+    icon: '🏛️',
+    levelRequirement: 7,
+  },
+  {
+    id: 'galactic_whale_consortium',
+    name: 'Galactic Whale Consortium',
+    description: 'Secret council of trillionaire Fox Whales ruling the market',
+    category: 'special',
+    basePrice: 180_000_000,
+    priceMultiplier: 1.54,
+    baseBenefit: 45_000_000,
+    benefitType: 'profit_per_hour',
+    icon: '🐳',
+    levelRequirement: 8,
+  },
+  {
+    id: 'eternal_fox_citadel',
+    name: 'Eternal Lord Fox Citadel',
+    description: 'Ultimate Level 10 monument generating astronomical passive profit',
+    category: 'special',
+    basePrice: 750_000_000,
+    priceMultiplier: 1.58,
+    baseBenefit: 180_000_000,
+    benefitType: 'profit_per_hour',
+    icon: '👑',
+    levelRequirement: 10,
+  },
+
+  // Collectible Telegram Fox Gifts
+  {
+    id: 'gift_star_fox',
+    name: 'Golden Star Fox',
+    description: 'Classic Telegram Star Fox holding a glowing golden star gift box',
+    category: 'gift',
+    basePrice: 500,
+    priceMultiplier: 1.35,
+    baseBenefit: 300,
+    benefitType: 'profit_per_hour',
+    icon: 'StarFox',
+    levelRequirement: 1,
+  },
+  {
+    id: 'gift_sakura_fox',
+    name: 'Sakura Kitsune Fox',
+    description: 'Mystic cherry-blossom nine-tailed Kitsune fox wrapped in silk ribbons',
+    category: 'gift',
+    basePrice: 2_500,
+    priceMultiplier: 1.38,
+    baseBenefit: 1_400,
+    benefitType: 'profit_per_hour',
+    icon: 'SakuraFox',
+    levelRequirement: 1,
+  },
+  {
+    id: 'gift_cyber_fox',
+    name: 'Cyberpunk Neon Fox',
+    description: 'Holographic neon-visor cyber fox pulsing with TON synthwave energy',
+    category: 'gift',
+    basePrice: 8_000,
+    priceMultiplier: 1.4,
+    baseBenefit: 4_200,
+    benefitType: 'profit_per_hour',
+    icon: 'CyberFox',
+    levelRequirement: 1,
+  },
+  {
+    id: 'gift_pirate_fox',
+    name: 'Captain Treasure Fox',
+    description: 'Swashbuckling pirate captain fox guarding an overflowing chest of gold',
+    category: 'gift',
+    basePrice: 18_000,
+    priceMultiplier: 1.42,
+    baseBenefit: 9_000,
+    benefitType: 'profit_per_hour',
+    icon: 'PirateFox',
+    levelRequirement: 1,
+  },
+  {
+    id: 'gift_arctic_fox',
+    name: 'Arctic Frost Crystal Fox',
+    description: 'Glacial aurora fox sculpted from enchanted blue ice and frost crystals',
+    category: 'gift',
+    basePrice: 40_000,
+    priceMultiplier: 1.45,
+    baseBenefit: 19_500,
+    benefitType: 'profit_per_hour',
+    icon: 'ArcticFox',
+    levelRequirement: 2,
+  },
+  {
+    id: 'gift_samurai_fox',
+    name: 'Shogun Katana Fox',
+    description: 'Feudal crimson-and-gold armored samurai fox wielding twin flame katanas',
+    category: 'gift',
+    basePrice: 95_000,
+    priceMultiplier: 1.45,
+    baseBenefit: 45_000,
+    benefitType: 'profit_per_hour',
+    icon: 'SamuraiFox',
+    levelRequirement: 2,
+  },
+  {
+    id: 'gift_pharaoh_fox',
+    name: 'Pharaoh Anubis Fox',
+    description: 'Ancient royal golden pharaoh fox adorned with lapis lazuli and sun crown',
+    category: 'gift',
+    basePrice: 220_000,
+    priceMultiplier: 1.48,
+    baseBenefit: 98_000,
+    benefitType: 'profit_per_hour',
+    icon: 'PharaohFox',
+    levelRequirement: 3,
+  },
+  {
+    id: 'gift_astronaut_fox',
+    name: 'Cosmic Astronaut Fox',
+    description: 'Zero-gravity lunar explorer fox in a gold-plated visor spacesuit',
+    category: 'gift',
+    basePrice: 500_000,
+    priceMultiplier: 1.5,
+    baseBenefit: 210_000,
+    benefitType: 'profit_per_hour',
+    icon: 'AstronautFox',
+    levelRequirement: 3,
+  },
+  {
+    id: 'gift_royal_fox',
+    name: 'Sovereign King Fox',
+    description: 'Supreme monarch fox wearing a diamond-encrusted crown and royal mantle',
+    category: 'gift',
+    basePrice: 1_200_000,
+    priceMultiplier: 1.52,
+    baseBenefit: 480_000,
+    benefitType: 'profit_per_hour',
+    icon: 'RoyalFox',
+    levelRequirement: 4,
+  },
+  {
+    id: 'gift_diamond_fox',
+    name: 'Mythic Diamond Whale Fox',
+    description: 'Ultra-rare translucent blue diamond fox radiating pure blockchain luxury',
+    category: 'gift',
+    basePrice: 3_000_000,
+    priceMultiplier: 1.55,
+    baseBenefit: 1_250_000,
+    benefitType: 'profit_per_hour',
+    icon: 'DiamondFox',
+    levelRequirement: 5,
+  },
+  {
+    id: 'gift_inferno_fox',
+    name: 'Volcanic Inferno Kitsune',
+    description: 'Blazing magma nine-tailed spirit fox forged in volcanic fire',
+    category: 'gift',
+    basePrice: 8_500_000,
+    priceMultiplier: 1.55,
+    baseBenefit: 3_400_000,
+    benefitType: 'profit_per_hour',
+    icon: 'InfernoFox',
+    levelRequirement: 6,
+  },
+  {
+    id: 'gift_emerald_fox',
+    name: 'Emerald Emperor Fox',
+    description: 'Imperial jade and emerald guardian fox blessing vaults with eternal yield',
+    category: 'gift',
+    basePrice: 25_000_000,
+    priceMultiplier: 1.56,
+    baseBenefit: 9_500_000,
+    benefitType: 'profit_per_hour',
+    icon: 'EmeraldFox',
+    levelRequirement: 7,
+  },
+  {
+    id: 'gift_nebula_fox',
+    name: 'Galactic Nebula Fox',
+    description: 'Interdimensional cosmic fox woven from stardust and dark-matter rings',
+    category: 'gift',
+    basePrice: 75_000_000,
+    priceMultiplier: 1.58,
+    baseBenefit: 28_000_000,
+    benefitType: 'profit_per_hour',
+    icon: 'NebulaFox',
+    levelRequirement: 8,
+  },
+  {
+    id: 'gift_celestial_fox',
+    name: 'Celestial Sun-God Fox',
+    description: 'Supreme Level 10 radiant divine fox crowned with a golden solar halo',
+    category: 'gift',
+    basePrice: 250_000_000,
+    priceMultiplier: 1.6,
+    baseBenefit: 95_000_000,
+    benefitType: 'profit_per_hour',
+    icon: 'CelestialFox',
+    levelRequirement: 10,
   },
 ];
 
@@ -230,21 +664,21 @@ export const TASKS: TaskDefinition[] = [
   },
   {
     id: 'telegram_channel',
-    title: 'Join Official Channel',
-    description: 'Subscribe to Fox Coin Announcements',
+    title: 'Join Official Telegram',
+    description: 'Subscribe to @FOX_COINEX on Telegram',
     category: 'social',
     reward: 10_000,
     target: 1,
-    actionUrl: 'https://t.me/FoxCoinOfficialChannel',
+    actionUrl: 'https://t.me/FOX_COINEX',
   },
   {
-    id: 'follow_x',
-    title: 'Follow on X / Twitter',
-    description: 'Follow @FoxCoinOfficial on X for bonus drop codes',
+    id: 'youtube_channel',
+    title: 'Subscribe on YouTube',
+    description: 'Subscribe to @FOX-COINl on YouTube for official updates',
     category: 'social',
     reward: 10_000,
     target: 1,
-    actionUrl: 'https://twitter.com/FoxCoinOfficial',
+    actionUrl: 'https://www.youtube.com/@FOX-COINl',
   },
 ];
 
@@ -262,4 +696,179 @@ export const GAME_CONSTANTS = {
   TURBO_MULTIPLIER: 3,
   TURBO_DURATION_MS: 20_000,
   MAX_DAILY_FULL_ENERGY: 6,
+  WHEEL_COOLDOWN_MS: 24 * 60 * 60 * 1000, // 24 hours
 };
+
+export const LUCKY_WHEEL_PRIZES: LuckyWheelPrize[] = [
+  {
+    id: 'wheel_1k',
+    label: '+1,000 FOX Coins',
+    shortLabel: '1,000',
+    persianLabel: '۱,۰۰۰ سکه روباه',
+    type: 'coins',
+    amount: 1_000,
+    weight: 28,
+    color: '#1E293B',
+    accentColor: '#F59E0B',
+    rarity: 'common',
+  },
+  {
+    id: 'wheel_energy',
+    label: 'Full Energy +1 Refill',
+    shortLabel: 'ENERGY ⚡',
+    persianLabel: 'شارژ کامل انرژی +۱',
+    type: 'full_energy',
+    amount: 1,
+    weight: 16,
+    color: '#064E3B',
+    accentColor: '#34D399',
+    rarity: 'rare',
+  },
+  {
+    id: 'wheel_2500',
+    label: '+2,500 FOX Coins',
+    shortLabel: '2,500',
+    persianLabel: '۲,۵۰۰ سکه روباه',
+    type: 'coins',
+    amount: 2_500,
+    weight: 20,
+    color: '#31102F',
+    accentColor: '#F472B6',
+    rarity: 'common',
+  },
+  {
+    id: 'wheel_turbo',
+    label: '3x Turbo Frenzy (45s)',
+    shortLabel: '3X TURBO 🔥',
+    persianLabel: 'توربو ۳ برابر (۴۵ ثانیه)',
+    type: 'turbo',
+    amount: 45,
+    weight: 12,
+    color: '#7C2D12',
+    accentColor: '#FB923C',
+    rarity: 'epic',
+  },
+  {
+    id: 'wheel_5k',
+    label: '+5,000 FOX Coins',
+    shortLabel: '5,000',
+    persianLabel: '۵,۰۰۰ سکه روباه',
+    type: 'coins',
+    amount: 5_000,
+    weight: 13,
+    color: '#1E1B4B',
+    accentColor: '#818CF8',
+    rarity: 'common',
+  },
+  {
+    id: 'wheel_15k',
+    label: '+15,000 FOX Coins',
+    shortLabel: '15,000',
+    persianLabel: '۱۵,۰۰۰ سکه روباه',
+    type: 'coins',
+    amount: 15_000,
+    weight: 6,
+    color: '#0F172A',
+    accentColor: '#38BDF8',
+    rarity: 'rare',
+  },
+  {
+    id: 'wheel_50k',
+    label: '+50,000 FOX Coins',
+    shortLabel: '50K 💎',
+    persianLabel: '۵۰,۰۰۰ سکه الماسی',
+    type: 'coins',
+    amount: 50_000,
+    weight: 3.5,
+    color: '#3B0764',
+    accentColor: '#C084FC',
+    rarity: 'epic',
+  },
+  {
+    id: 'wheel_100k',
+    label: '+100,000 FOX JACKPOT',
+    shortLabel: '100K 👑',
+    persianLabel: 'جک‌پات ۱۰۰,۰۰۰ سکه!',
+    type: 'coins',
+    amount: 100_000,
+    weight: 1.5,
+    color: '#78350F',
+    accentColor: '#FDE047',
+    rarity: 'jackpot',
+  },
+];
+
+export function pickLuckyWheelPrize(
+  prizes: LuckyWheelPrize[] = LUCKY_WHEEL_PRIZES
+): { prize: LuckyWheelPrize; index: number } {
+  const list = prizes && prizes.length > 0 ? prizes : LUCKY_WHEEL_PRIZES;
+  const totalWeight = list.reduce((sum, item) => sum + Math.max(0.01, Number(item.weight) || 1), 0);
+  let rand = Math.random() * totalWeight;
+  for (let i = 0; i < list.length; i++) {
+    rand -= Math.max(0.01, Number(list[i].weight) || 1);
+    if (rand <= 0) {
+      return { prize: list[i], index: i };
+    }
+  }
+  return { prize: list[0], index: 0 };
+}
+
+export function getUpgradeXpBonus(price: number): number {
+  return Math.max(1_000, Math.floor(price * 0.5));
+}
+
+export function reconcileUserLevel<
+  T extends {
+    balance: number;
+    totalEarned: number;
+    level: number;
+    levelName: string;
+    currentLevelMinCoins: number;
+    nextLevelMinCoins: number;
+    upgrades?: Record<string, number>;
+  }
+>(user: T, customUpgrades: UpgradeDefinition[] = UPGRADES): T {
+  const catalog = customUpgrades && customUpgrades.length > 0 ? customUpgrades : UPGRADES;
+  let totalUpgradeValue = 0;
+
+  if (user.upgrades) {
+    for (const [upId, lvl] of Object.entries(user.upgrades)) {
+      const count = Math.max(0, Math.floor(Number(lvl) || 0));
+      if (count <= 0) continue;
+      const def = catalog.find((u) => u.id === upId) || UPGRADES.find((u) => u.id === upId);
+      const basePrice = def ? def.basePrice : 1_000;
+      const mult = def ? Math.max(1.05, def.priceMultiplier) : 1.4;
+      for (let i = 0; i < Math.min(count, 200); i++) {
+        const stepPrice = Math.floor(basePrice * Math.pow(mult, i));
+        totalUpgradeValue += stepPrice + getUpgradeXpBonus(stepPrice);
+      }
+    }
+  }
+
+  const effectiveScore = Math.max(
+    Number(user.totalEarned) || 0,
+    (Number(user.balance) || 0) + totalUpgradeValue
+  );
+  user.totalEarned = effectiveScore;
+
+  let current = PLAYER_LEVELS[0];
+  let next = PLAYER_LEVELS[1] || PLAYER_LEVELS[0];
+
+  for (let i = 0; i < PLAYER_LEVELS.length; i++) {
+    if (effectiveScore >= PLAYER_LEVELS[i].minCoins) {
+      current = PLAYER_LEVELS[i];
+      next = PLAYER_LEVELS[i + 1] || PLAYER_LEVELS[i];
+    } else {
+      break;
+    }
+  }
+
+  user.level = current.level;
+  user.levelName = current.name;
+  user.currentLevelMinCoins = current.minCoins;
+  user.nextLevelMinCoins = next.minCoins;
+
+  return user;
+}
+
+

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { UserGameState, UpgradeDefinition, TaskDefinition } from './types/game.js';
 import { api, GameConfig } from './utils/api.js';
+import { reconcileUserLevel } from '../server/gameConfig.js';
 import { sound } from './utils/audio.js';
 import { TelegramService } from './utils/telegram.js';
 import { Header } from './components/Header.js';
@@ -10,13 +11,15 @@ import { TasksScreen } from './components/TasksScreen.js';
 import { FriendsScreen } from './components/FriendsScreen.js';
 import { LeaderboardScreen } from './components/LeaderboardScreen.js';
 import { TradeScreen } from './components/TradeScreen.js';
+import { GiftsScreen } from './components/GiftsScreen.js';
 import { Navigation, NavTab } from './components/Navigation.js';
 import { DailyRewardModal } from './components/modals/DailyRewardModal.js';
 import { OfflineEarningsModal } from './components/modals/OfflineEarningsModal.js';
 import { BoostModal } from './components/modals/BoostModal.js';
+import { LuckyWheelModal } from './components/modals/LuckyWheelModal.js';
 import { SettingsModal } from './components/modals/SettingsModal.js';
 import { AuthModal } from './components/modals/AuthModal.js';
-import { AdminTelegramSetup } from './components/AdminTelegramSetup.js';
+import { AdminTelegramSetup, AdminTabType } from './components/AdminTelegramSetup.js';
 import { MandatoryChannelGate } from './components/MandatoryChannelGate.js';
 import { Smartphone, Monitor, Sparkles } from 'lucide-react';
 
@@ -29,13 +32,27 @@ export default function App() {
 
   // Modals state
   const [showDailyModal, setShowDailyModal] = useState<boolean>(false);
+  const [showWheelModal, setShowWheelModal] = useState<boolean>(false);
   const [showOfflineModal, setShowOfflineModal] = useState<boolean>(false);
   const [offlineEarningsAmount, setOfflineEarningsAmount] = useState<number>(0);
   const [showBoostModal, setShowBoostModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [showAdminModal, setShowAdminModal] = useState<boolean>(false);
-  const [adminInitialTab, setAdminInitialTab] = useState<'webhook' | 'github'>('webhook');
+  const [adminInitialTab, setAdminInitialTab] = useState<AdminTabType>('users');
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(() => {
+    return typeof window !== 'undefined' && Boolean(sessionStorage.getItem('fox_admin_secret'));
+  });
+  const [equippedGiftId, setEquippedGiftId] = useState<string | null>(() => {
+    return typeof window !== 'undefined' ? localStorage.getItem('fox_equipped_gift') : null;
+  });
+
+  const handleEquipGift = (giftId: string) => {
+    setEquippedGiftId(giftId);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('fox_equipped_gift', giftId);
+    }
+  };
 
   // Telegram simulator shell toggle for desktop/web testing
   const [isTelegramSimMode, setIsTelegramSimMode] = useState<boolean>(false);
@@ -44,6 +61,18 @@ export default function App() {
   // Initialize App and Authenticate
   useEffect(() => {
     TelegramService.init();
+
+    // Support direct Admin Panel URL (/admin, ?admin=1, or #admin)
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      if (
+        window.location.pathname === '/admin' ||
+        urlParams.get('admin') === '1' ||
+        window.location.hash === '#admin'
+      ) {
+        setShowAdminModal(true);
+      }
+    }
 
     const initApp = async () => {
       try {
@@ -88,9 +117,21 @@ export default function App() {
 
     initApp();
 
-    // Register real-time sync listener from api client
+    // Register real-time sync listener from api client with anti-rollback reconciliation
     api.registerStateListener((updatedUser) => {
-      setUser(updatedUser);
+      setUser((prev) => {
+        if (!prev || prev.id !== updatedUser.id) {
+          return reconcileUserLevel({ ...updatedUser });
+        }
+        const merged: UserGameState = {
+          ...updatedUser,
+          balance: api.hasPendingTaps() ? Math.max(updatedUser.balance, prev.balance) : updatedUser.balance,
+          totalEarned: Math.max(updatedUser.totalEarned || 0, prev.totalEarned || 0),
+          totalTaps: Math.max(updatedUser.totalTaps || 0, prev.totalTaps || 0),
+          energy: api.hasPendingTaps() ? Math.min(updatedUser.energy, prev.energy) : updatedUser.energy,
+        };
+        return reconcileUserLevel(merged);
+      });
     });
   }, []);
 
@@ -98,62 +139,81 @@ export default function App() {
   useEffect(() => {
     if (user && !offlineCheckedRef.current) {
       offlineCheckedRef.current = true;
-      if (user.unclaimedPassive > 0) {
-        setOfflineEarningsAmount(user.unclaimedPassive);
+      if (user.unclaimedPassive >= 10) {
+        setOfflineEarningsAmount(Math.floor(user.unclaimedPassive));
         setShowOfflineModal(true);
       }
     }
   }, [user]);
 
-  // Client-side smooth energy regeneration ticker
+  // Client-side real-time energy regeneration AND continuous profitPerHour ticker
+  const lastTickRef = useRef<number>(Date.now());
   useEffect(() => {
+    lastTickRef.current = Date.now();
     const interval = setInterval(() => {
+      const now = Date.now();
+      const elapsedSec = Math.min(10, Math.max(0.5, (now - lastTickRef.current) / 1000));
+      lastTickRef.current = now;
+
       setUser((prev) => {
         if (!prev) return null;
-        if (prev.energy >= prev.maxEnergy) return prev;
-        return {
+        const needsEnergy = prev.energy < prev.maxEnergy;
+        const hasProfit = prev.profitPerHour > 0;
+        if (!needsEnergy && !hasProfit) return prev;
+
+        const nextEnergy = needsEnergy
+          ? Math.min(prev.maxEnergy, prev.energy + prev.energyRegenRate * elapsedSec)
+          : prev.energy;
+        const profitGain = hasProfit ? (prev.profitPerHour / 3600) * elapsedSec : 0;
+
+        const nextState: UserGameState = reconcileUserLevel({
           ...prev,
-          energy: Math.min(prev.maxEnergy, prev.energy + prev.energyRegenRate),
-        };
+          energy: Math.floor(nextEnergy),
+          balance: prev.balance + profitGain,
+          totalEarned: prev.totalEarned + profitGain,
+          lastPassiveClaimTimestamp: now,
+        });
+        api.syncClientState(nextState);
+        return nextState;
       });
     }, 1000);
 
     return () => clearInterval(interval);
   }, []);
 
-  // Tapping handler
-  const handleTap = useCallback(
-    (count: number) => {
-      if (!user) return;
-      if (user.energy <= 0) return;
+  // Tapping handler (stable reference for zero re-render lag)
+  const handleTap = useCallback((count: number) => {
+    setUser((prev) => {
+      if (!prev) return null;
+      const isTurbo = prev.boosters.turboActiveUntil > Date.now();
+      if (!isTurbo && prev.energy <= 0) return prev;
 
-      const isTurbo = user.boosters.turboActiveUntil > Date.now();
       const tapMultiplier = isTurbo ? 3 : 1;
-      const earned = user.tapPower * tapMultiplier * count;
+      const effectiveCount = isTurbo ? count : Math.min(count, Math.floor(prev.energy));
+      if (effectiveCount <= 0) return prev;
 
-      // Optimistic instant UI update
-      setUser((prev) => {
-        if (!prev) return null;
-        const nextEnergy = Math.max(0, prev.energy - count);
-        return {
-          ...prev,
-          balance: prev.balance + earned,
-          totalEarned: prev.totalEarned + earned,
-          totalTaps: prev.totalTaps + count,
-          energy: nextEnergy,
-        };
+      const earned = prev.tapPower * tapMultiplier * effectiveCount;
+      const nextEnergy = isTurbo ? prev.energy : Math.max(0, prev.energy - effectiveCount);
+
+      const nextState: UserGameState = reconcileUserLevel({
+        ...prev,
+        balance: prev.balance + earned,
+        totalEarned: prev.totalEarned + earned,
+        totalTaps: prev.totalTaps + effectiveCount,
+        energy: nextEnergy,
       });
+      api.syncClientState(nextState);
+      return nextState;
+    });
 
-      // Send to batched queue for server authorization
-      api.queueTap(count);
-    },
-    [user]
-  );
+    // Send to batched queue for server authorization
+    api.queueTap(count);
+  }, []);
 
   // Upgrade handler
   const handlePurchaseUpgrade = async (upgradeId: string) => {
     const updated = await api.purchaseUpgrade(upgradeId);
-    setUser(updated);
+    setUser(reconcileUserLevel({ ...updated }));
   };
 
   // Claim Passive income
@@ -178,6 +238,13 @@ export default function App() {
   const handleUseBoost = async (type: 'full_energy' | 'turbo') => {
     const updated = await api.useBooster(type);
     setUser(updated);
+  };
+
+  // Spin Lucky Wheel (24h cooldown)
+  const handleSpinWheel = async () => {
+    const res = await api.spinLuckyWheel();
+    setUser(res.user);
+    return res;
   };
 
   // Link account
@@ -225,12 +292,11 @@ export default function App() {
     }
   };
 
-  // Channel membership gate status
+  // Channel membership gate status (requires both @FOX_COINEX and @FOX-COINl verification)
   const isChannelVerified = user
     ? !!(
-        user.hasJoinedChannel ||
-        (typeof window !== 'undefined' &&
-          localStorage.getItem(`fox_channel_verified_${user.id}`) === 'true')
+        typeof window !== 'undefined' &&
+        localStorage.getItem(`fox_channels_v2_verified_${user.id}`) === 'true'
       )
     : true;
 
@@ -250,21 +316,25 @@ export default function App() {
     );
   }
 
+  const isEffectiveAdmin = Boolean(user?.isAdmin || isAdminUnlocked);
+
   return (
     <div className="min-h-screen bg-[#07090F] flex flex-col items-center justify-center text-slate-100 font-sans selection:bg-amber-500 selection:text-black">
-      {/* Platform Mode Switcher for Web Testers */}
-      <div className="fixed top-2 right-2 z-50 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 px-2.5 py-1 rounded-full shadow-lg text-[11px] font-bold">
-        <button
-          onClick={handleToggleSimMode}
-          className={`flex items-center gap-1 transition ${
-            isTelegramSimMode ? 'text-sky-400' : 'text-slate-400 hover:text-white'
-          }`}
-          title="Toggle Telegram Mini App UI simulation"
-        >
-          {isTelegramSimMode ? <Smartphone className="w-3.5 h-3.5" /> : <Monitor className="w-3.5 h-3.5" />}
-          <span>{isTelegramSimMode ? 'Telegram View' : 'Web View'}</span>
-        </button>
-      </div>
+      {/* Platform Mode Switcher — Visible only to Admin */}
+      {isEffectiveAdmin && (
+        <div className="fixed top-2 right-2 z-50 flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 px-2.5 py-1 rounded-full shadow-lg text-[11px] font-bold">
+          <button
+            onClick={handleToggleSimMode}
+            className={`flex items-center gap-1 transition ${
+              isTelegramSimMode ? 'text-sky-400' : 'text-slate-400 hover:text-white'
+            }`}
+            title="Toggle Telegram Mini App UI simulation"
+          >
+            {isTelegramSimMode ? <Smartphone className="w-3.5 h-3.5" /> : <Monitor className="w-3.5 h-3.5" />}
+            <span>{isTelegramSimMode ? 'Telegram View' : 'Web View'}</span>
+          </button>
+        </div>
+      )}
 
       {/* Mobile Device Frame Container */}
       <div
@@ -292,10 +362,12 @@ export default function App() {
         {user && (
           <Header
             user={user}
+            isAdmin={isEffectiveAdmin}
             onOpenSettings={() => setShowSettingsModal(true)}
             onOpenBoost={() => setShowBoostModal(true)}
             onOpenDaily={() => setShowDailyModal(true)}
-            onOpenAdminSetup={(tab = 'webhook') => {
+            onOpenWheel={() => setShowWheelModal(true)}
+            onOpenAdminSetup={(tab = 'users') => {
               setAdminInitialTab(tab);
               setShowAdminModal(true);
             }}
@@ -311,6 +383,9 @@ export default function App() {
               user={user}
               onTap={handleTap}
               onOpenBoost={() => setShowBoostModal(true)}
+              onOpenWheel={() => setShowWheelModal(true)}
+              equippedGiftId={equippedGiftId}
+              onOpenGifts={() => setActiveTab('gifts')}
             />
           )}
 
@@ -319,6 +394,17 @@ export default function App() {
               user={user}
               upgrades={config.upgrades}
               onPurchase={handlePurchaseUpgrade}
+            />
+          )}
+
+          {user && activeTab === 'gifts' && config && (
+            <GiftsScreen
+              user={user}
+              upgrades={config.upgrades}
+              botUsername={config?.telegramBotUsername || 'FOXCOINBot'}
+              equippedGiftId={equippedGiftId}
+              onEquipGift={handleEquipGift}
+              onPurchaseGift={handlePurchaseUpgrade}
             />
           )}
 
@@ -335,6 +421,7 @@ export default function App() {
               user={user}
               tasks={config.tasks}
               onClaimTask={handleClaimTask}
+              onOpenWheel={() => setShowWheelModal(true)}
             />
           )}
 
@@ -380,6 +467,15 @@ export default function App() {
           />
         )}
 
+        {showWheelModal && user && (
+          <LuckyWheelModal
+            user={user}
+            prizes={config?.wheelPrizes}
+            onClose={() => setShowWheelModal(false)}
+            onSpin={handleSpinWheel}
+          />
+        )}
+
         {showOfflineModal && user && (
           <OfflineEarningsModal
             amount={offlineEarningsAmount}
@@ -400,36 +496,42 @@ export default function App() {
         {showSettingsModal && user && (
           <SettingsModal
             user={user}
+            isAdmin={isEffectiveAdmin}
             onClose={() => setShowSettingsModal(false)}
             isMuted={isMuted}
             onToggleSound={handleToggleSound}
             onLinkAccount={handleLinkAccount}
             onLogout={handleLogout}
             botUsername={config?.telegramBotUsername || 'FOXCOINBot'}
-            onOpenAdminSetup={(tab: 'webhook' | 'github' = 'webhook') => {
+            onOpenAdminSetup={(tab: 'users' | 'webhook' | 'github' = 'users') => {
               setAdminInitialTab(tab);
               setShowAdminModal(true);
             }}
           />
         )}
 
-        {/* Mandatory Telegram Channel Membership Gate */}
+        {/* Mandatory Telegram & YouTube Channel Membership Gate */}
         {user && !isChannelVerified && (
           <MandatoryChannelGate
             user={user}
-            channelHandle={config?.telegramBotUsername ? `@${config.telegramBotUsername.replace('@', '')}` : '@FoxCoinOfficial'}
+            channelHandle="@FOX_COINEX"
+            youtubeUrl="https://www.youtube.com/@FOX-COINl"
             onVerified={(updatedUser) => {
               setUser(updatedUser);
             }}
           />
         )}
 
-        {/* Admin Telegram Bot Webhook Setup */}
+        {/* Dedicated Admin Management Page (Users, Cards, Gift Prices, Wheel, Bot Setup & GitHub Upload) */}
         {showAdminModal && (
           <AdminTelegramSetup
             user={user}
+            config={config}
             onClose={() => setShowAdminModal(false)}
             initialTab={adminInitialTab}
+            onAdminStatusChange={(unlocked) => setIsAdminUnlocked(unlocked)}
+            onUserUpdated={(updatedUser) => setUser(updatedUser)}
+            onConfigUpdated={(nextCfg) => setConfig(nextCfg)}
           />
         )}
       </div>

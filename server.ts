@@ -110,7 +110,8 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/game/config', (req, res) => {
   res.json({
-    upgrades: UPGRADES,
+    upgrades: db.getUpgrades(),
+    wheelPrizes: db.getWheelPrizes(),
     levels: PLAYER_LEVELS,
     tasks: TASKS,
     dailyRewards: DAILY_REWARDS,
@@ -340,6 +341,20 @@ app.post('/api/game/boost', requireAuth, (req: AuthenticatedRequest, res) => {
   });
 });
 
+// Lucky Wheel 24h Spin
+app.post('/api/game/spin-wheel', requireAuth, (req: AuthenticatedRequest, res) => {
+  const result = db.spinLuckyWheel(req.userId!);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  res.json({
+    user: result.state,
+    prize: result.prize,
+    prizeIndex: result.prizeIndex,
+  });
+});
+
 // Global Leaderboard
 app.get('/api/game/leaderboard', requireAuth, (req: AuthenticatedRequest, res) => {
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
@@ -394,7 +409,7 @@ app.post('/api/telegram/verify-channel', requireAuth, async (req: AuthenticatedR
 
   // If Telegram user and bot token configured, attempt verification via Telegram API
   const botToken = db.getEffectiveBotToken();
-  const channelHandle = process.env.TELEGRAM_CHANNEL || '@FoxCoinOfficial';
+  const channelHandle = process.env.TELEGRAM_CHANNEL || '@FOX_COINEX';
 
   if (botToken && user.telegramId) {
     try {
@@ -495,6 +510,104 @@ app.get('/api/admin/telegram/config', requireAdmin, async (req: AuthenticatedReq
     suggestedWebhookUrl,
     webhookInfo,
   });
+});
+
+// Admin: Get All Registered Users
+app.get('/api/admin/users', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const users = db.getAllUsers();
+  res.json({ users });
+});
+
+// Admin: Give or Deduct FOX Tokens from any User
+app.post('/api/admin/users/adjust-balance', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const { userId, amount, operation, balanceType } = req.body;
+  if (!userId || typeof userId !== 'string') {
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+  if (amount === undefined || isNaN(Number(amount)) || Number(amount) < 0) {
+    return res.status(400).json({ error: 'Valid non-negative token amount is required' });
+  }
+  if (!['add', 'deduct', 'set'].includes(operation)) {
+    return res.status(400).json({ error: 'Operation must be add, deduct, or set' });
+  }
+
+  const result = db.adminAdjustUserBalance({
+    userId,
+    amount: Number(amount),
+    operation,
+    balanceType: balanceType === 'referral' ? 'referral' : 'main',
+  });
+
+  if (!result.success) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  res.json({
+    success: true,
+    user: result.user,
+    users: db.getAllUsers(),
+  });
+});
+
+// Admin: Add or Edit Upgrade Card / Fox Gift Price
+app.post('/api/admin/cards/save', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const { card } = req.body;
+  if (!card || !card.id || !card.name) {
+    return res.status(400).json({ error: 'Valid card id and name are required' });
+  }
+
+  const cleanCard = {
+    id: String(card.id).trim(),
+    name: String(card.name).trim(),
+    description: String(card.description || '').trim(),
+    category: ['tap', 'passive', 'special', 'gift'].includes(card.category) ? card.category : 'passive',
+    basePrice: Math.max(1, Math.floor(Number(card.basePrice) || 100)),
+    priceMultiplier: Math.max(1.05, Number(card.priceMultiplier) || 1.4),
+    benefitType: ['tap_power', 'profit_per_hour', 'max_energy', 'energy_regen'].includes(card.benefitType)
+      ? card.benefitType
+      : 'profit_per_hour',
+    baseBenefit: Math.max(1, Math.floor(Number(card.baseBenefit) || 100)),
+    levelRequirement: Math.max(1, Math.min(10, Math.floor(Number(card.levelRequirement) || 1))),
+    icon: String(card.icon || 'Rocket').trim(),
+  };
+
+  const upgrades = db.adminSaveUpgrade(cleanCard as any);
+  res.json({ success: true, upgrades });
+});
+
+// Admin: Delete Upgrade Card
+app.post('/api/admin/cards/delete', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const { upgradeId } = req.body;
+  if (!upgradeId) {
+    return res.status(400).json({ error: 'upgradeId is required' });
+  }
+
+  const upgrades = db.adminDeleteUpgrade(String(upgradeId));
+  res.json({ success: true, upgrades });
+});
+
+// Admin: Save Lucky Wheel Prizes
+app.post('/api/admin/wheel/save', requireAdmin, (req: AuthenticatedRequest, res) => {
+  const { prizes } = req.body;
+  if (!Array.isArray(prizes) || prizes.length === 0) {
+    return res.status(400).json({ error: 'Valid prizes array is required' });
+  }
+
+  const cleanPrizes = prizes.map((p: any, idx: number) => ({
+    id: String(p.id || `wheel_${idx}`),
+    label: String(p.label || `+${Number(p.amount || 1000).toLocaleString()} FOX`),
+    shortLabel: String(p.shortLabel || `${Number(p.amount || 1000).toLocaleString()}`),
+    persianLabel: String(p.persianLabel || p.label || ''),
+    type: ['coins', 'full_energy', 'turbo'].includes(p.type) ? p.type : 'coins',
+    amount: Math.max(1, Math.floor(Number(p.amount) || 1000)),
+    weight: Math.max(0.1, Number(p.weight) || 10),
+    color: String(p.color || '#1E293B'),
+    accentColor: String(p.accentColor || '#F59E0B'),
+    rarity: ['common', 'rare', 'epic', 'jackpot'].includes(p.rarity) ? p.rarity : 'common',
+  }));
+
+  const wheelPrizes = db.adminSaveWheelPrizes(cleanPrizes as any);
+  res.json({ success: true, wheelPrizes });
 });
 
 // Check Webhook Status with Telegram

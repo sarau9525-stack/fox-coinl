@@ -6,43 +6,42 @@ import {
   Smartphone,
   Globe,
   Lock,
-  Bot,
   LogOut,
-  Check,
-  ExternalLink,
   ShieldCheck,
+  KeyRound,
 } from 'lucide-react';
 import { UserGameState } from '../../types/game.js';
-import { sound } from '../../utils/audio.js';
-import { TelegramService } from '../../utils/telegram.js';
 
 interface SettingsModalProps {
   user: UserGameState;
+  isAdmin?: boolean;
   onClose: () => void;
   isMuted: boolean;
   onToggleSound: () => void;
   onLinkAccount: (email: string, pass: string) => Promise<void>;
   onLogout: () => void;
   botUsername?: string;
-  onOpenAdminSetup?: (tab?: 'webhook' | 'github') => void;
+  onOpenAdminSetup?: (tab?: 'users' | 'webhook' | 'github') => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   user,
+  isAdmin = false,
   onClose,
   isMuted,
   onToggleSound,
   onLinkAccount,
   onLogout,
-  botUsername = 'FoxCoinOfficialBot',
   onOpenAdminSetup,
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'account' | 'telegram'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'account'>('general');
   const [linkEmail, setLinkEmail] = useState('');
   const [linkPassword, setLinkPassword] = useState('');
   const [linkMsg, setLinkMsg] = useState<{ text: string; isError: boolean } | null>(null);
   const [isLinking, setIsLinking] = useState(false);
   const [language, setLanguage] = useState('English');
+
+  const isUserAdmin = Boolean(user.isAdmin || isAdmin);
 
   const handleLink = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,8 +73,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="grid grid-cols-3 gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800 my-3 text-xs font-bold">
+        {/* Tabs - Only General & Account for regular players */}
+        <div className="grid grid-cols-2 gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800 my-3 text-xs font-bold">
           <button
             onClick={() => setActiveTab('general')}
             className={`py-1.5 rounded-lg transition ${
@@ -91,14 +90,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             }`}
           >
             Account
-          </button>
-          <button
-            onClick={() => setActiveTab('telegram')}
-            className={`py-1.5 rounded-lg transition ${
-              activeTab === 'telegram' ? 'bg-amber-500 text-slate-950 shadow' : 'text-slate-400'
-            }`}
-          >
-            Bot Setup
           </button>
         </div>
 
@@ -170,6 +161,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Visible ONLY if user is already authenticated as Admin */}
+              {isUserAdmin && onOpenAdminSetup && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenAdminSetup('webhook');
+                  }}
+                  className="w-full py-3 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-black text-xs shadow-lg shadow-purple-600/20 transition flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4 text-amber-300" />
+                  <span>Open Admin Management Page</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -184,7 +190,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="flex justify-between py-1 border-b border-slate-800/60">
                   <span className="text-slate-400">Type</span>
                   <span className="text-amber-300 font-bold">
-                    {user.isTelegram ? 'Telegram Account' : user.isGuest ? 'Guest Session' : 'Email Account'}
+                    {isUserAdmin
+                      ? 'Administrator'
+                      : user.isTelegram
+                        ? 'Telegram Account'
+                        : user.isGuest
+                          ? 'Guest Session'
+                          : 'Email Account'}
                   </span>
                 </div>
                 <div className="flex justify-between py-1">
@@ -246,59 +258,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <LogOut className="w-4 h-4" />
                 <span>Log Out / Switch Account</span>
               </button>
-            </div>
-          )}
 
-          {activeTab === 'telegram' && (
-            <div className="space-y-3 text-xs text-slate-300">
-              <div className="p-3 rounded-2xl bg-sky-500/10 border border-sky-500/30">
-                <div className="flex items-center gap-2 text-sky-400 font-bold mb-1">
-                  <Bot className="w-4 h-4" />
-                  <span>Telegram Bot Integration</span>
-                </div>
-                <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Fox Coin runs both in Telegram as a native Mini App and on web with one shared database, balance, and upgrades.
-                </p>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
-                <span className="font-bold text-amber-300 block">How to configure your Telegram Bot:</span>
-                <ol className="list-decimal list-inside space-y-1.5 text-[11px] text-slate-300">
-                  <li>
-                    Open <strong className="text-sky-300">@BotFather</strong> in Telegram and send <code className="bg-slate-800 px-1 py-0.5 rounded text-amber-400">/newbot</code>.
-                  </li>
-                  <li>
-                    Name your bot: <strong className="text-white">Fox Coin</strong> and set a username like <strong className="text-white">FoxCoinOfficialBot</strong>.
-                  </li>
-                  <li>
-                    Send <code className="bg-slate-800 px-1 py-0.5 rounded text-amber-400">/newapp</code> to BotFather, choose your bot, and enter your deployed URL as the Web App URL.
-                  </li>
-                  <li>
-                    Add your bot token to <code className="bg-slate-800 px-1 py-0.5 rounded text-amber-400">.env</code> as <code className="text-white">TELEGRAM_BOT_TOKEN</code>.
-                  </li>
-                </ol>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-slate-900/80 border border-slate-800">
-                <span className="font-bold text-slate-200 block mb-1">Launch URL</span>
-                <code className="text-[10px] bg-slate-950 p-2 rounded-lg text-emerald-400 block break-all font-mono">
-                  {typeof window !== 'undefined' ? window.location.origin : 'https://foxcoin.game'}
-                </code>
-              </div>
-
-              {/* Direct Webhook Admin Button */}
+              {/* Subtle Admin Login Trigger */}
               {onOpenAdminSetup && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onClose();
-                    onOpenAdminSetup();
-                  }}
-                  className="w-full py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black text-xs rounded-xl shadow-md transition active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>Configure Webhook Automatically (Admin)</span>
-                </button>
+                <div className="pt-2 border-t border-slate-800/70 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenAdminSetup('users');
+                    }}
+                    className="text-[11px] text-slate-500 hover:text-amber-400 flex items-center gap-1 transition cursor-pointer py-1"
+                  >
+                    <KeyRound className="w-3 h-3" />
+                    <span>{isUserAdmin ? 'Open Admin Dashboard' : 'Admin Management Login'}</span>
+                  </button>
+                </div>
               )}
             </div>
           )}
