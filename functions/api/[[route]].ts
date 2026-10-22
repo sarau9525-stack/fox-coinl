@@ -1222,3 +1222,23 @@ export const onRequest: PagesFunction<CloudflareEnv> = async (context) => {
     200
   );
 };
+
+export default {
+  async fetch(request: Request, env: CloudflareEnv & { ASSETS?: any }): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith('/api')) {
+      return onRequest({
+        request,
+        env,
+        next: async () => new Response('Not Found', { status: 404 }),
+        data: {},
+        params: {},
+      });
+    }
+    if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
+      return env.ASSETS.fetch(request);
+    }
+    return new Response('FOXCOIN Cloudflare Worker Active', { status: 200 });
+  },
+};
+
